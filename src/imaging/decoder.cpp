@@ -41,6 +41,27 @@ UINT BitsPerPixel(IWICImagingFactory* wic, IWICBitmapSource* source) {
     return 0;
 }
 
+// Whether any pixel of the source can be less than fully opaque.
+bool CanBeTransparent(IWICImagingFactory* wic, IWICBitmapSource* source) {
+    WICPixelFormatGUID format;
+    ComPtr<IWICComponentInfo> info;
+    ComPtr<IWICPixelFormatInfo2> formatInfo;
+    BOOL transparency = TRUE;
+    if (FAILED(source->GetPixelFormat(&format)) || FAILED(wic->CreateComponentInfo(format, &info)) ||
+        FAILED(info.As(&formatInfo)) || FAILED(formatInfo->SupportsTransparency(&transparency))) {
+        return true;
+    }
+    if (!transparency) return false;
+    // Indexed formats are transparent only if their palette is.
+    ComPtr<IWICPalette> palette;
+    BOOL alpha = TRUE;
+    if (SUCCEEDED(wic->CreatePalette(&palette)) && SUCCEEDED(source->CopyPalette(palette.Get())) &&
+        SUCCEEDED(palette->HasAlpha(&alpha))) {
+        return alpha;
+    }
+    return true;
+}
+
 // Icons hold several sizes and frame 0 is often the smallest, so pick the largest, deepest one.
 HRESULT GetFrame(IWICImagingFactory* wic, IWICBitmapDecoder* decoder, ComPtr<IWICBitmapFrameDecode>& out) {
     HRESULT hr = decoder->GetFrame(0, &out);
@@ -308,6 +329,7 @@ HRESULT DecodeImage(const Source& src, Image& out) {
     if (FAILED(hr)) return hr;
     WICPixelFormatGUID format{};
     source->GetPixelFormat(&format);
+    const bool transparent = CanBeTransparent(wic.Get(), source.Get());
 
     ComPtr<IWICFormatConverter> converter;
     hr = wic->CreateFormatConverter(&converter);
@@ -345,10 +367,11 @@ HRESULT DecodeImage(const Source& src, Image& out) {
         hr = converter->CopyPixels(&rect, stripStride, stripStride * n, strip.get());
         if (FAILED(hr)) break;
         BYTE* const begin = strip.get();
-        const BYTE* const end = begin + size_t(stripStride) * n;
+        BYTE* const end = begin + size_t(stripStride) * n;
 
-        // Composite transparent pixels over the background once, so painting is a plain blit.
-        for (BYTE* p = begin; p != end; p += 4) {
+        // Composite transparent pixels over the background once, so painting is a plain blit; sources
+        // that cannot be transparent skip this.
+        for (BYTE* p = transparent ? begin : end; p != end; p += 4) {
             alpha &= p[3];
             const UINT inverse = 255u - p[3];
             if (inverse == 0) continue;
