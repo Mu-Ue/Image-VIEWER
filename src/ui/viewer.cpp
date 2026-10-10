@@ -189,6 +189,8 @@ void Load(Source src, std::wstring name) {
         ShowError(hr, name);
         return;
     }
+    // A pasted copy is no longer needed once the bitmap holds every pixel of it.
+    if (src.stream && image.exact) src = {.bitmap = image.bitmap};
     g.source = std::move(src);
     SetImage(image, std::move(name));
 }
