@@ -410,8 +410,9 @@ HRESULT DecodeImage(const Source& src, Image& out) {
         if (indices) {
             BYTE* const dst = indices.get();
             const auto store = [&](size_t i, ptrdiff_t at) {
-                const BYTE* p = begin + i * 4;
-                const UINT32 color = p[0] | UINT32(p[1]) << 8 | UINT32(p[2]) << 16;
+                UINT32 color;
+                memcpy(&color, begin + i * 4, 4);
+                color &= 0xFFFFFF;
                 if (color != lastColor) {
                     const int index = palette.Find(color);
                     if (index < 0) return false;
