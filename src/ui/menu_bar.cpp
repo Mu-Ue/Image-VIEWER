@@ -14,6 +14,7 @@ struct {
     HMENU fileMenu = nullptr;
     HFONT font = nullptr;
     int height = 0;
+    SIZE fileText{};
     RECT fileButton{};
     bool fileHot = false, menuOpen = false;
 } bar;
@@ -36,8 +37,9 @@ void Paint(HDC dc) {
     SelectObject(dc, bar.font);
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, kChromeText);
-    RECT text = r;
-    DrawTextW(dc, L"File", 4, &text, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    // Centered like DrawText, which would load the complex-script shaper (TextShaping.dll) for plain "File".
+    ExtTextOutW(dc, r.left + (r.right - r.left - bar.fileText.cx) / 2, r.top + (r.bottom - r.top - bar.fileText.cy) / 2,
+                0, nullptr, L"File", 4, nullptr);
 }
 
 LRESULT CALLBACK BarProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -102,17 +104,16 @@ void LayoutMenuBar(UINT dpi) {
     if (bar.font) DeleteObject(bar.font);
     bar.font = CreateFontIndirectW(&ncm.lfMenuFont);
 
-    SIZE text{};
     HDC dc = GetDC(nullptr);
     const HGDIOBJ old = SelectObject(dc, bar.font);
-    GetTextExtentPoint32W(dc, L"File", 4, &text);
+    GetTextExtentPoint32W(dc, L"File", 4, &bar.fileText);
     SelectObject(dc, old);
     ReleaseDC(nullptr, dc);
 
     const int pad = MulDiv(4, dpi, 96);
     bar.height = MulDiv(32, dpi, 96);
     // Flush left so the button lines up with its popup, which opens at the window edge.
-    bar.fileButton = {0, pad, text.cx + MulDiv(20, dpi, 96), bar.height - pad};
+    bar.fileButton = {0, pad, bar.fileText.cx + MulDiv(20, dpi, 96), bar.height - pad};
 }
 
 int MenuBarHeight() {
