@@ -4,6 +4,7 @@
 #include <cstring>
 #include <memory>
 #include <new>
+#include <type_traits>
 
 #include "config.h"
 
@@ -106,6 +107,61 @@ struct Palette {
     }
 };
 
+// Where source pixel (x, y) lands in an upright buffer, in bytes: origin + x * stepX + y * stepY.
+struct Placement {
+    ptrdiff_t origin, stepX, stepY;
+};
+
+// For a width x height source with the given EXIF orientation, stored upright with pixel bytes per
+// pixel and stride bytes per upright row.
+Placement Place(int orientation, UINT width, UINT height, ptrdiff_t pixel, ptrdiff_t stride) {
+    const ptrdiff_t right = ptrdiff_t(width) - 1, bottom = ptrdiff_t(height) - 1;
+    switch (orientation) {
+        case 2: return {right * pixel, -pixel, stride};                    // mirrored
+        case 3: return {bottom * stride + right * pixel, -pixel, -stride};  // rotated 180
+        case 4: return {bottom * stride, pixel, -stride};                   // flipped
+        case 5: return {0, stride, pixel};                                  // transposed
+        case 6: return {bottom * pixel, stride, -pixel};                    // rotated 90 clockwise
+        case 7: return {right * stride + bottom * pixel, -stride, -pixel};  // transversed
+        case 8: return {right * stride, -stride, pixel};                    // rotated 270 clockwise
+        default: return {0, pixel, stride};
+    }
+}
+
+// The upright rectangle that source rows [0, rows) land in.
+RECT PlacedRows(int orientation, UINT width, UINT height, UINT rows) {
+    const LONG w = LONG(width), h = LONG(height), n = LONG(rows);  // source size
+    switch (orientation) {
+        case 1: case 2: return {0, 0, w, n};
+        case 3: case 4: return {0, h - n, w, h};
+        case 5: case 8: return {0, 0, n, w};
+        default: return {h - n, 0, h, w};
+    }
+}
+
+// Calls visit(i, offset) for the source pixels of rows [y0, y1): i counts pixels from (0, y0) in row
+// order, offset is where the pixel lands. Stops early if visit returns false. Sideways images are
+// walked in column tiles, so their writes, which run down upright columns, stay in cache.
+template <ptrdiff_t Pixel, typename Visit>
+bool ForEachPixel(UINT width, UINT y0, UINT y1, const Placement& place, bool sideways, Visit&& visit) {
+    const auto walk = [&](auto stepX) {
+        const UINT tile = sideways ? 64 : width;
+        for (UINT x0 = 0; x0 < width; x0 += tile) {
+            const UINT x1 = std::min(width, x0 + tile);
+            for (UINT y = y0; y < y1; ++y) {
+                size_t i = size_t(y - y0) * width + x0;
+                ptrdiff_t offset = place.origin + ptrdiff_t(x0) * stepX + ptrdiff_t(y) * place.stepY;
+                for (UINT x = x0; x < x1; ++x, ++i, offset += stepX) {
+                    if (!visit(i, offset)) return false;
+                }
+            }
+        }
+        return true;
+    };
+    // Upright rows, the common case, get a constant step the compiler can optimize for.
+    return place.stepX == Pixel ? walk(std::integral_constant<ptrdiff_t, Pixel>{}) : walk(place.stepX);
+}
+
 // The formats this viewer opens, recognized by their first bytes rather than the file name.
 const GUID* SniffFormat(const BYTE* head, ULONG size) {
     const auto at = [&](ULONG offset, const char* magic, ULONG length) {
@@ -165,7 +221,8 @@ HRESULT CreateDecoder(IWICImagingFactory* wic, IStream* stream, ComPtr<IWICBitma
 }  // namespace
 
 HRESULT OpenSource(IWICImagingFactory* wic, const Source& src, UINT maxSize, ComPtr<IWICBitmapSource>& source,
-                   UINT& width, UINT& height) {
+                   UINT& width, UINT& height, int* orientation) {
+    if (orientation) *orientation = 1;
     ComPtr<IStream> stream = src.stream;
     HRESULT hr = stream ? S_OK : OpenFileStream(wic, src.path, stream);
     ComPtr<IWICBitmapDecoder> decoder;
@@ -199,16 +256,18 @@ HRESULT OpenSource(IWICImagingFactory* wic, const Source& src, UINT maxSize, Com
         WICBitmapTransformOptions(WICBitmapTransformRotate90 | WICBitmapTransformFlipHorizontal),
         WICBitmapTransformRotate270,
     };
-    const int orientation = ReadOrientation(frame.Get());
-    if (orientation != 1) {
+    const int exif = ReadOrientation(frame.Get());
+    if (orientation) {
+        *orientation = exif;
+    } else if (exif != 1) {
         // The rotator reads its source pixel by pixel, so buffer it to keep strip reads below linear.
         ComPtr<IWICBitmap> buffered;
         ComPtr<IWICBitmapFlipRotator> rotator;
         hr = wic->CreateBitmapFromSource(source.Get(), WICBitmapCacheOnLoad, &buffered);
         if (SUCCEEDED(hr)) hr = wic->CreateBitmapFlipRotator(&rotator);
-        if (SUCCEEDED(hr)) hr = rotator->Initialize(buffered.Get(), kTransforms[orientation]);
+        if (SUCCEEDED(hr)) hr = rotator->Initialize(buffered.Get(), kTransforms[exif]);
         if (FAILED(hr)) return hr;
-        if (orientation >= 5) std::swap(width, height);
+        if (exif >= 5) std::swap(width, height);
         source = rotator;
     }
     return S_OK;
@@ -219,8 +278,9 @@ HRESULT DecodeImage(const Source& src, Image& out) {
     HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
                                   IID_PPV_ARGS(&wic));
     ComPtr<IWICBitmapSource> source;
-    UINT width = 0, height = 0;
-    if (SUCCEEDED(hr)) hr = OpenSource(wic.Get(), src, kMaxBitmapSize, source, width, height);
+    UINT width = 0, height = 0;  // of the source, before orientation is applied
+    int orientation = 1;
+    if (SUCCEEDED(hr)) hr = OpenSource(wic.Get(), src, kMaxBitmapSize, source, width, height, &orientation);
     if (FAILED(hr)) return hr;
 
     ComPtr<IWICFormatConverter> converter;
@@ -231,20 +291,24 @@ HRESULT DecodeImage(const Source& src, Image& out) {
     }
     if (FAILED(hr)) return hr;
 
-    // Decode in strips through a small 32bpp buffer and store the exact pixels in the smallest form:
-    // palette indices while the image has <= 256 colors, otherwise 24bpp (alpha is composited away).
+    // Decode in strips through a small 32bpp buffer and store the exact pixels upright, in the smallest
+    // form: palette indices while the image has <= 256 colors, otherwise 24bpp (alpha is composited away).
+    const bool sideways = orientation >= 5;
+    const UINT outW = sideways ? height : width, outH = sideways ? width : height;
     const UINT stripStride = width * 4;
     const UINT rows = std::clamp((1u << 20) / stripStride, 1u, height);
     const std::unique_ptr<BYTE[]> strip(new (std::nothrow) BYTE[size_t(stripStride) * rows]);
     std::unique_ptr<BYTE[]> indices(new (std::nothrow) BYTE[size_t(width) * height]);
     if (!strip) return E_OUTOFMEMORY;
 
-    const UINT stride24 = (width * 3 + 3) & ~3u;
+    const UINT stride24 = (outW * 3 + 3) & ~3u;
+    const Placement placeIndex = Place(orientation, width, height, 1, outW);
+    const Placement place24 = Place(orientation, width, height, 3, stride24);
     Palette palette;
     UINT32 lastColor = ~0u;
     BYTE lastIndex = 0;
     BYTE* bits = nullptr;
-    HBITMAP bitmap = indices ? nullptr : CreateDib(width, height, 24, nullptr, 0, bits);
+    HBITMAP bitmap = indices ? nullptr : CreateDib(outW, outH, 24, nullptr, 0, bits);
     if (!indices && !bitmap) return E_OUTOFMEMORY;
 
     const UINT bg = kBackground & 0xFF;  // gray: all channels equal
@@ -267,30 +331,32 @@ HRESULT DecodeImage(const Source& src, Image& out) {
         }
 
         if (indices) {
-            BYTE* dst = indices.get() + size_t(y0) * width;
-            const BYTE* p = begin;
-            for (; p != end; p += 4) {
+            BYTE* const dst = indices.get();
+            const auto store = [&](size_t i, ptrdiff_t at) {
+                const BYTE* p = begin + i * 4;
                 const UINT32 color = p[0] | UINT32(p[1]) << 8 | UINT32(p[2]) << 16;
                 if (color != lastColor) {
                     const int index = palette.Find(color);
-                    if (index < 0) break;
+                    if (index < 0) return false;
                     lastColor = color;
                     lastIndex = BYTE(index);
                 }
-                *dst++ = lastIndex;
-            }
-            if (p == end) continue;
+                dst[at] = lastIndex;
+                return true;
+            };
+            if (ForEachPixel<1>(width, y0, y0 + n, placeIndex, sideways, store)) continue;
 
             // More than 256 colors: switch to 24bpp, expanding the rows stored so far.
-            bitmap = CreateDib(width, height, 24, nullptr, 0, bits);
+            bitmap = CreateDib(outW, outH, 24, nullptr, 0, bits);
             if (!bitmap) {
                 hr = E_OUTOFMEMORY;
                 break;
             }
-            for (UINT y = 0; y < y0; ++y) {
-                const BYTE* in = indices.get() + size_t(y) * width;
-                BYTE* d = bits + size_t(y) * stride24;
-                for (UINT x = 0; x < width; ++x, d += 3) {
+            const RECT done = PlacedRows(orientation, width, height, y0);
+            for (LONG y = done.top; y < done.bottom; ++y) {
+                const BYTE* in = indices.get() + size_t(y) * outW;
+                BYTE* d = bits + size_t(y) * stride24 + size_t(done.left) * 3;
+                for (LONG x = done.left; x < done.right; ++x, d += 3) {
                     const UINT32 color = palette.colors[in[x]];
                     d[0] = BYTE(color);
                     d[1] = BYTE(color >> 8);
@@ -300,15 +366,14 @@ HRESULT DecodeImage(const Source& src, Image& out) {
             indices.reset();
         }
 
-        for (UINT y = 0; y < n; ++y) {
-            const BYTE* p = begin + size_t(y) * stripStride;
-            BYTE* d = bits + size_t(y0 + y) * stride24;
-            for (UINT x = 0; x < width; ++x, p += 4, d += 3) {
-                d[0] = p[0];
-                d[1] = p[1];
-                d[2] = p[2];
-            }
-        }
+        ForEachPixel<3>(width, y0, y0 + n, place24, sideways, [&](size_t i, ptrdiff_t at) {
+            const BYTE* p = begin + i * 4;
+            BYTE* d = bits + at;
+            d[0] = p[0];
+            d[1] = p[1];
+            d[2] = p[2];
+            return true;
+        });
     }
     if (FAILED(hr)) {
         if (bitmap) DeleteObject(bitmap);
@@ -317,20 +382,20 @@ HRESULT DecodeImage(const Source& src, Image& out) {
 
     if (indices) {
         const WORD bpp = palette.count <= 2 ? 1 : palette.count <= 16 ? 4 : 8;
-        bitmap = CreateDib(width, height, bpp, palette.colors, palette.count, bits);
+        bitmap = CreateDib(outW, outH, bpp, palette.colors, palette.count, bits);
         if (!bitmap) return E_OUTOFMEMORY;
-        const UINT stride = (width * bpp + 31) / 32 * 4;
+        const UINT stride = (outW * bpp + 31) / 32 * 4;
         const UINT perByte = 8u / bpp;
-        for (UINT y = 0; y < height; ++y) {
-            const BYTE* in = indices.get() + size_t(y) * width;
+        for (UINT y = 0; y < outH; ++y) {
+            const BYTE* in = indices.get() + size_t(y) * outW;
             BYTE* d = bits + size_t(y) * stride;
             if (bpp == 8) {
-                std::copy_n(in, width, d);
+                std::copy_n(in, outW, d);
                 continue;
             }
             BYTE packed = 0;  // leftmost pixel in the high bits
             UINT k = 0;
-            for (UINT x = 0; x < width; ++x) {
+            for (UINT x = 0; x < outW; ++x) {
                 packed = BYTE(packed << bpp | in[x]);
                 if (++k == perByte) {
                     *d++ = packed;
@@ -343,7 +408,7 @@ HRESULT DecodeImage(const Source& src, Image& out) {
     }
 
     out.bitmap = bitmap;
-    out.width = width;
-    out.height = height;
+    out.width = outW;
+    out.height = outH;
     return S_OK;
 }

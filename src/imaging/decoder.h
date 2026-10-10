@@ -19,8 +19,11 @@ struct Image {
 };
 
 // Opens the upright image: the chosen frame, scaled to fit maxSize (0 = no limit), EXIF orientation applied.
+// If orientation is given, it is set to the EXIF orientation (1-8) instead of applying it, and width and
+// height are those of the stored pixels.
 HRESULT OpenSource(IWICImagingFactory* wic, const Source& src, UINT maxSize,
-                   Microsoft::WRL::ComPtr<IWICBitmapSource>& source, UINT& width, UINT& height);
+                   Microsoft::WRL::ComPtr<IWICBitmapSource>& source, UINT& width, UINT& height,
+                   int* orientation = nullptr);
 
 // Decodes into the smallest exact DIB section. Needs COM initialized on the calling thread.
 HRESULT DecodeImage(const Source& src, Image& out);
