@@ -25,7 +25,7 @@ target_compile_options(ImageVIEWER PRIVATE /W4 /permissive- /utf-8 /sdl /guard:c
 # List the libraries explicitly instead of CMake's defaults (which import ole32.dll). onecore_apiset comes
 # last, so it only supplies the COM functions, which then bind straight to combase.dll.
 set(CMAKE_CXX_STANDARD_LIBRARIES "")
-target_link_libraries(ImageVIEWER PRIVATE delayimp kernel32 user32 gdi32 imm32 dwmapi shell32 comdlg32 advapi32 uuid
+target_link_libraries(ImageVIEWER PRIVATE delayimp kernel32 user32 gdi32 imm32 dwmapi shell32 comdlg32 uuid
                       onecore_apiset)
 # Only needed for the file picker and --register; keep them off the startup path.
 target_link_options(ImageVIEWER PRIVATE /DELAYLOAD:comdlg32.dll /DELAYLOAD:shell32.dll)
