@@ -54,6 +54,42 @@ int ReadOrientation(IWICBitmapFrameDecode* frame) {
     return 1;
 }
 
+// Bits per pixel of a frame's native pixel format, or 0 if unknown.
+UINT BitsPerPixel(IWICImagingFactory* wic, IWICBitmapSource* source) {
+    WICPixelFormatGUID format;
+    ComPtr<IWICComponentInfo> info;
+    ComPtr<IWICPixelFormatInfo> formatInfo;
+    UINT bpp = 0;
+    if (SUCCEEDED(source->GetPixelFormat(&format)) && SUCCEEDED(wic->CreateComponentInfo(format, &info)) &&
+        SUCCEEDED(info.As(&formatInfo)) && SUCCEEDED(formatInfo->GetBitsPerPixel(&bpp))) {
+        return bpp;
+    }
+    return 0;
+}
+
+// Icons hold several sizes and frame 0 is often the smallest, so pick the largest, deepest one.
+HRESULT GetFrame(IWICImagingFactory* wic, IWICBitmapDecoder* decoder, ComPtr<IWICBitmapFrameDecode>& out) {
+    HRESULT hr = decoder->GetFrame(0, &out);
+    GUID container;
+    UINT count = 0;
+    if (FAILED(hr) || FAILED(decoder->GetContainerFormat(&container)) || container != GUID_ContainerFormatIco ||
+        FAILED(decoder->GetFrameCount(&count))) {
+        return hr;
+    }
+    UINT64 best = 0;
+    for (UINT i = 0; i < count; ++i) {
+        ComPtr<IWICBitmapFrameDecode> frame;
+        UINT w = 0, h = 0;
+        if (FAILED(decoder->GetFrame(i, &frame)) || FAILED(frame->GetSize(&w, &h))) continue;
+        const UINT64 score = (UINT64(w) * h << 8) | BitsPerPixel(wic, frame.Get());
+        if (score > best) {
+            best = score;
+            out = frame;
+        }
+    }
+    return hr;
+}
+
 HRESULT DecodeImage(const wchar_t* path, Image& out) {
     ComPtr<IWICImagingFactory> wic;
     HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
@@ -64,7 +100,7 @@ HRESULT DecodeImage(const wchar_t* path, Image& out) {
                                             WICDecodeMetadataCacheOnDemand, &decoder);
     }
     ComPtr<IWICBitmapFrameDecode> frame;
-    if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
+    if (SUCCEEDED(hr)) hr = GetFrame(wic.Get(), decoder.Get(), frame);
     UINT width = 0, height = 0;
     if (SUCCEEDED(hr)) hr = frame->GetSize(&width, &height);
     if (FAILED(hr)) return hr;
