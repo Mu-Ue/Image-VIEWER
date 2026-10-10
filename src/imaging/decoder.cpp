@@ -376,11 +376,19 @@ HRESULT DecodeImage(const Source& src, Image& out) {
     HBITMAP bitmap = indices ? nullptr : CreateDib(outW, outH, 24, nullptr, 0, bits);
     if (!indices && !bitmap) return E_OUTOFMEMORY;
 
+    // Once 24bpp, upright opaque 8-bit sources are decoded straight into the bitmap: same bytes, no copy.
+    const bool canDecodeDirect = orientation == 1 && !transparent && Is8BitColor(format);
+    ComPtr<IWICFormatConverter> direct;
     const UINT bg = kBackground & 0xFF;  // gray: all channels equal
     BYTE alpha = 255;  // AND of all alpha values: 255 if nothing is transparent
     for (UINT y0 = 0; y0 < height; y0 += rows) {
         const UINT n = std::min(rows, height - y0);
         const WICRect rect{0, INT(y0), INT(width), INT(n)};
+        if (direct) {
+            hr = direct->CopyPixels(&rect, stride24, stride24 * n, bits + size_t(y0) * stride24);
+            if (FAILED(hr)) break;
+            continue;
+        }
         hr = converter->CopyPixels(&rect, stripStride, stripStride * n, strip.get());
         if (FAILED(hr)) break;
         BYTE* const begin = strip.get();
@@ -442,6 +450,12 @@ HRESULT DecodeImage(const Source& src, Image& out) {
             d[2] = p[2];
             return true;
         });
+        if (canDecodeDirect &&
+            SUCCEEDED(wic->CreateFormatConverter(&direct)) &&
+            FAILED(direct->Initialize(source.Get(), GUID_WICPixelFormat24bppBGR, WICBitmapDitherTypeNone,
+                                      nullptr, 0.0, WICBitmapPaletteTypeCustom))) {
+            direct.Reset();
+        }
     }
     if (FAILED(hr)) {
         if (bitmap) DeleteObject(bitmap);
