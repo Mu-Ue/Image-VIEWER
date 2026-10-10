@@ -129,6 +129,23 @@ struct Palette {
     }
 };
 
+// Packs a row of palette indices at Bpp bits each, leftmost pixel in the high bits.
+template <UINT Bpp>
+void PackRow(const BYTE* in, UINT width, BYTE* d) {
+    constexpr UINT perByte = 8 / Bpp;
+    UINT x = 0;
+    for (; x + perByte <= width; x += perByte) {
+        BYTE packed = 0;
+        for (UINT k = 0; k < perByte; ++k) packed = BYTE(packed << Bpp | in[x + k]);
+        *d++ = packed;
+    }
+    if (x < width) {
+        BYTE packed = 0;
+        for (UINT k = 0; k < perByte; ++k) packed = BYTE(packed << Bpp | (x + k < width ? in[x + k] : 0));
+        *d = packed;
+    }
+}
+
 // Where source pixel (x, y) lands in an upright buffer, in bytes: origin + x * stepX + y * stepY.
 struct Placement {
     ptrdiff_t origin, stepX, stepY;
@@ -469,25 +486,12 @@ HRESULT DecodeImage(const Source& src, Image& out) {
         bitmap = CreateDib(outW, outH, bpp, palette.colors, palette.count, bits);
         if (!bitmap) return E_OUTOFMEMORY;
         const UINT stride = (outW * bpp + 31) / 32 * 4;
-        const UINT perByte = 8u / bpp;
         for (UINT y = 0; y < outH; ++y) {
             const BYTE* in = indices.get() + size_t(y) * outW;
             BYTE* d = bits + size_t(y) * stride;
-            if (bpp == 8) {
-                std::copy_n(in, outW, d);
-                continue;
-            }
-            BYTE packed = 0;  // leftmost pixel in the high bits
-            UINT k = 0;
-            for (UINT x = 0; x < outW; ++x) {
-                packed = BYTE(packed << bpp | in[x]);
-                if (++k == perByte) {
-                    *d++ = packed;
-                    packed = 0;
-                    k = 0;
-                }
-            }
-            if (k) *d = BYTE(packed << (bpp * (perByte - k)));
+            if (bpp == 8) std::copy_n(in, outW, d);
+            else if (bpp == 4) PackRow<4>(in, outW, d);
+            else PackRow<1>(in, outW, d);
         }
     }
 
