@@ -31,6 +31,10 @@ constexpr wchar_t kFileFilter[] =
 
 constexpr UINT kMaxBitmapSize = 16384;  // Caps the decoded bitmap at 1 GB.
 constexpr COLORREF kBackground = 0x000000;  // black
+constexpr COLORREF kChrome = 0x202020;      // title bar and menu bar, Windows dark gray
+constexpr COLORREF kChromeHover = 0x2D2D2D;
+constexpr COLORREF kChromePressed = 0x383838;
+constexpr COLORREF kChromeText = 0xE6E6E6;
 constexpr float kMaxZoom = 64.0f;
 constexpr float kZoomStep = 1.25f;
 
@@ -336,6 +340,12 @@ HRESULT DecodeImage(const Source& src, Image& out) {
 
 struct Viewer {
     HWND hwnd = nullptr;
+    HWND bar = nullptr;  // menu bar child window across the top of the client area
+    HMENU fileMenu = nullptr;
+    HFONT barFont = nullptr;
+    int barH = 0;
+    RECT fileButton{};
+    bool fileHot = false, menuOpen = false;
     Source source;  // of the current image, re-read when saving
     std::wstring name;
 
@@ -440,7 +450,8 @@ void PlaceWindow() {
         rc.right = std::max(LONG(std::lround(g.imageW * scale)), LONG(MulDiv(480, dpi, 96)));
         rc.bottom = std::max(LONG(std::lround(g.imageH * scale)), LONG(MulDiv(320, dpi, 96)));
     }
-    AdjustWindowRectExForDpi(&rc, WS_OVERLAPPEDWINDOW, TRUE, 0, dpi);
+    rc.bottom += g.barH;
+    AdjustWindowRectExForDpi(&rc, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi);
     const int w = rc.right - rc.left, h = rc.bottom - rc.top;
     SetWindowPos(g.hwnd, nullptr, work.left + (int(workW) - w) / 2, work.top + (int(workH) - h) / 2,
                  w, h, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -483,7 +494,7 @@ void SetImage(const Image& image, std::wstring name) {
     g.shownPercent = -1;
     ClampOffset();
     UpdateTitle();
-    EnableMenuItem(GetMenu(g.hwnd), kCmdSaveAs, MF_BYCOMMAND | MF_ENABLED);
+    EnableMenuItem(g.fileMenu, kCmdSaveAs, MF_BYCOMMAND | MF_ENABLED);
     InvalidateRect(g.hwnd, nullptr, FALSE);
 }
 
@@ -660,22 +671,119 @@ void Paste() {
     }
 }
 
-LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+// Sizes the menu bar and its font for a DPI.
+void LayoutBar(UINT dpi) {
+    NONCLIENTMETRICSW ncm{sizeof(ncm)};
+    SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0, dpi);
+    if (g.barFont) DeleteObject(g.barFont);
+    g.barFont = CreateFontIndirectW(&ncm.lfMenuFont);
+
+    SIZE text{};
+    HDC dc = GetDC(nullptr);
+    const HGDIOBJ old = SelectObject(dc, g.barFont);
+    GetTextExtentPoint32W(dc, L"File", 4, &text);
+    SelectObject(dc, old);
+    ReleaseDC(nullptr, dc);
+
+    const int pad = MulDiv(4, dpi, 96);
+    g.barH = MulDiv(32, dpi, 96);
+    g.fileButton = {pad, pad, pad + text.cx + MulDiv(20, dpi, 96), g.barH - pad};
+}
+
+void PaintBar(HDC dc) {
+    RECT client;
+    GetClientRect(g.bar, &client);
+    SetDCBrushColor(dc, kChrome);
+    FillRect(dc, &client, HBRUSH(GetStockObject(DC_BRUSH)));
+    const RECT& r = g.fileButton;
+    if (g.menuOpen || g.fileHot) {
+        const COLORREF color = g.menuOpen ? kChromePressed : kChromeHover;
+        SetDCBrushColor(dc, color);
+        SetDCPenColor(dc, color);
+        SelectObject(dc, GetStockObject(DC_BRUSH));
+        SelectObject(dc, GetStockObject(DC_PEN));
+        const int radius = g.barH / 4;
+        RoundRect(dc, r.left, r.top, r.right, r.bottom, radius, radius);
+    }
+    SelectObject(dc, g.barFont);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, kChromeText);
+    RECT text = r;
+    DrawTextW(dc, L"File", 4, &text, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+}
+
+void ShowFileMenu(bool keyboard) {
+    g.menuOpen = true;
+    RedrawWindow(g.bar, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+    RECT r = g.fileButton;
+    MapWindowPoints(g.bar, nullptr, reinterpret_cast<POINT*>(&r), 2);
+    TPMPARAMS params{sizeof(params), r};
+    if (keyboard) PostMessageW(g.hwnd, WM_KEYDOWN, VK_DOWN, 0);  // select the first item
+    TrackPopupMenuEx(g.fileMenu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_VERTICAL, r.left, r.bottom, g.hwnd, &params);
+    // The click that closed the menu must not reopen it.
+    MSG msg;
+    PeekMessageW(&msg, g.bar, WM_LBUTTONDOWN, WM_LBUTTONDOWN, PM_REMOVE);
+    g.menuOpen = false;
+    g.fileHot = false;
+    InvalidateRect(g.bar, nullptr, FALSE);
+}
+
+LRESULT CALLBACK BarProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_PAINT: {
             PAINTSTRUCT ps;
-            Render(BeginPaint(hwnd, &ps));
+            PaintBar(BeginPaint(hwnd, &ps));
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_MOUSEMOVE: {
+            const bool hot = PtInRect(&g.fileButton, {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)});
+            if (hot != g.fileHot) {
+                g.fileHot = hot;
+                TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd};
+                if (hot) TrackMouseEvent(&tme);
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+        case WM_MOUSELEAVE:
+            g.fileHot = false;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        case WM_LBUTTONDOWN:
+            if (PtInRect(&g.fileButton, {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)})) ShowFileMenu(false);
+            return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_CREATE:
+            LayoutBar(GetDpiForWindow(hwnd));
+            g.bar = CreateWindowExW(0, L"ImageViewerBar", nullptr, WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd,
+                                    nullptr, reinterpret_cast<const CREATESTRUCTW*>(lp)->hInstance, nullptr);
+            return g.bar ? 0 : -1;
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            const HDC dc = BeginPaint(hwnd, &ps);
+            SetViewportOrgEx(dc, 0, g.barH, nullptr);  // the image area starts below the bar
+            Render(dc);
             EndPaint(hwnd, &ps);
             return 0;
         }
         case WM_ERASEBKGND:
             return 1;
         case WM_SIZE:
-            OnSize(float(LOWORD(lp)), float(HIWORD(lp)));
+            MoveWindow(g.bar, 0, 0, LOWORD(lp), g.barH, TRUE);
+            OnSize(float(LOWORD(lp)), float(HIWORD(lp) - g.barH));
             return 0;
         case WM_MOUSEWHEEL: {  // also delivered for touchpad pinch
             POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
             ScreenToClient(hwnd, &pt);
+            pt.y -= g.barH;
             const float notches = GET_WHEEL_DELTA_WPARAM(wp) / float(WHEEL_DELTA);
             ZoomAt(g.zoom * std::pow(kZoomStep, notches), float(pt.x), float(pt.y));
             return 0;
@@ -704,7 +812,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_LBUTTONDBLCLK: {  // toggle fit <-> 100% (2x for images smaller than the window)
             const float fitZoom = FitZoom();
             ZoomAt(g.fit ? (fitZoom < 1.0f ? 1.0f : 2.0f) : fitZoom,
-                   float(GET_X_LPARAM(lp)), float(GET_Y_LPARAM(lp)));
+                   float(GET_X_LPARAM(lp)), float(GET_Y_LPARAM(lp) - g.barH));
             return 0;
         }
         case WM_COMMAND:
@@ -713,6 +821,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 case kCmdSaveAs: SaveAs(); break;
             }
             return 0;
+        case WM_SYSCHAR:
+            if (wp == 'f' || wp == 'F') {
+                ShowFileMenu(true);
+                return 0;
+            }
+            break;
         case WM_KEYDOWN: {
             if (GetKeyState(VK_CONTROL) < 0) {
                 switch (wp) {
@@ -734,6 +848,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_DPICHANGED: {
             const RECT* r = reinterpret_cast<const RECT*>(lp);
+            LayoutBar(HIWORD(wp));
             SetWindowPos(hwnd, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top,
                          SWP_NOZORDER | SWP_NOACTIVATE);
             return 0;
@@ -745,7 +860,27 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
+// Dark popup menus. uxtheme's SetPreferredAppMode (ordinal 135, Windows 10 1903+) is undocumented,
+// so it is looked up at run time and skipped if missing.
+void EnableDarkMenus() {
+    using SetPreferredAppMode = int(WINAPI*)(int);
+    constexpr int kForceDark = 2;
+    if (HMODULE uxtheme = LoadLibraryExW(L"uxtheme.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32)) {
+        const auto set = reinterpret_cast<SetPreferredAppMode>(GetProcAddress(uxtheme, MAKEINTRESOURCEA(135)));
+        if (set) set(kForceDark);
+    }
+}
+
 HWND CreateMainWindow(HINSTANCE instance) {
+    EnableDarkMenus();
+
+    WNDCLASSEXW bar{sizeof(bar)};
+    bar.lpfnWndProc = BarProc;
+    bar.hInstance = instance;
+    bar.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    bar.lpszClassName = L"ImageViewerBar";
+    if (!RegisterClassExW(&bar)) return nullptr;
+
     WNDCLASSEXW wc{sizeof(wc)};
     wc.style = CS_DBLCLKS;
     wc.lpfnWndProc = WndProc;
@@ -756,19 +891,17 @@ HWND CreateMainWindow(HINSTANCE instance) {
     wc.lpszClassName = kAppId;
     if (!RegisterClassExW(&wc)) return nullptr;
 
-    HMENU file = CreatePopupMenu();
-    AppendMenuW(file, MF_STRING, kCmdOpen, L"&Open…\tCtrl+O");
-    AppendMenuW(file, MF_STRING | MF_GRAYED, kCmdSaveAs, L"Save &As…\tCtrl+S");
-    HMENU menu = CreateMenu();
-    AppendMenuW(menu, MF_POPUP, UINT_PTR(file), L"&File");
+    g.fileMenu = CreatePopupMenu();
+    AppendMenuW(g.fileMenu, MF_STRING, kCmdOpen, L"&Open…\tCtrl+O");
+    AppendMenuW(g.fileMenu, MF_STRING | MF_GRAYED, kCmdSaveAs, L"Save &As…\tCtrl+S");
 
-    HWND hwnd = CreateWindowExW(0, kAppId, kAppName, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
-                                CW_USEDEFAULT, CW_USEDEFAULT, nullptr, menu, instance, nullptr);
+    HWND hwnd = CreateWindowExW(0, kAppId, kAppName, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT,
+                                CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, nullptr, nullptr, instance, nullptr);
     if (hwnd) {
-        // Dark title bar that blends into the canvas (caption color is Windows 11 only).
+        // Dark title bar that blends into the menu bar (caption color is Windows 11 only).
         const BOOL dark = TRUE;
         DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
-        const COLORREF caption = kBackground;
+        const COLORREF caption = kChrome;
         DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &caption, sizeof(caption));
     }
     return hwnd;
