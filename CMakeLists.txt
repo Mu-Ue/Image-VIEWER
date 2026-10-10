@@ -18,6 +18,7 @@ add_executable(ImageVIEWER WIN32
     src/ui/viewer.cpp
     res/app.rc
     res/app.manifest)
+set_source_files_properties(res/app.rc PROPERTIES OBJECT_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/res/app.ico)
 target_include_directories(ImageVIEWER PRIVATE src)
 target_compile_definitions(ImageVIEWER PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_compile_options(ImageVIEWER PRIVATE /W4 /permissive- /utf-8 /sdl /guard:cf)
