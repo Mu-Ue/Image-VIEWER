@@ -16,7 +16,7 @@ Output: `build\ImageViewer.exe` (single file, no dependencies).
 ## Use
 
 ```
-ImageViewer.exe photo.jpg
+ImageViewer.exe [photo.jpg]
 ```
 
 | Input                    | Action                    |

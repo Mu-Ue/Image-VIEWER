@@ -30,7 +30,7 @@ constexpr wchar_t kFileFilter[] =
     L"*.webp;*.heic;*.heif;*.avif;*.jxr;*.wdp\0All files\0*.*\0";
 
 constexpr UINT kMaxBitmapSize = 16384;  // Caps the decoded bitmap at 1 GB.
-constexpr COLORREF kBackground = 0x202020;  // neutral gray
+constexpr COLORREF kBackground = 0x000000;  // black
 constexpr float kMaxZoom = 64.0f;
 constexpr float kZoomStep = 1.25f;
 
@@ -362,6 +362,7 @@ void ClampOffset() {
 }
 
 void UpdateTitle() {
+    if (!g.image.bitmap) return;
     const long percent = std::lround(g.zoom * 100);
     if (percent == g.shownPercent) return;
     g.shownPercent = percent;
@@ -369,6 +370,7 @@ void UpdateTitle() {
 }
 
 void ZoomAt(float zoom, float x, float y) {
+    if (!g.image.bitmap) return;
     const float fitZoom = FitZoom();
     zoom = std::clamp(zoom, fitZoom, std::max(kMaxZoom, fitZoom));
     if (zoom == g.zoom) return;
@@ -398,7 +400,8 @@ void OnSize(float width, float height) {
     InvalidateRect(g.hwnd, nullptr, FALSE);
 }
 
-// Sizes the window to the image (capped to the work area) and centers it on the active monitor.
+// Sizes the window to the image (capped to the work area), or a default size when empty,
+// and centers it on the active monitor.
 void PlaceWindow() {
     POINT cursor;
     GetCursorPos(&cursor);
@@ -406,11 +409,14 @@ void PlaceWindow() {
     GetMonitorInfoW(MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST), &mi);
     const RECT& work = mi.rcWork;
     const float workW = float(work.right - work.left), workH = float(work.bottom - work.top);
-    const float scale = std::min({1.0f, workW * 0.85f / g.imageW, workH * 0.85f / g.imageH});
 
     const UINT dpi = GetDpiForWindow(g.hwnd);
-    RECT rc{0, 0, std::max(LONG(std::lround(g.imageW * scale)), LONG(MulDiv(480, dpi, 96))),
-            std::max(LONG(std::lround(g.imageH * scale)), LONG(MulDiv(320, dpi, 96)))};
+    RECT rc{0, 0, MulDiv(960, dpi, 96), MulDiv(640, dpi, 96)};
+    if (g.image.bitmap) {
+        const float scale = std::min({1.0f, workW * 0.85f / g.imageW, workH * 0.85f / g.imageH});
+        rc.right = std::max(LONG(std::lround(g.imageW * scale)), LONG(MulDiv(480, dpi, 96)));
+        rc.bottom = std::max(LONG(std::lround(g.imageH * scale)), LONG(MulDiv(320, dpi, 96)));
+    }
     AdjustWindowRectExForDpi(&rc, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi);
     const int w = rc.right - rc.left, h = rc.bottom - rc.top;
     SetWindowPos(g.hwnd, nullptr, work.left + (int(workW) - w) / 2, work.top + (int(workH) - h) / 2,
@@ -596,21 +602,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
     if (g.path == L"--unregister") return Unregister();
 
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE))) return 1;
-    if (g.path.empty() && !PickFile(g.path)) return 0;
     g.name = g.path.substr(g.path.find_last_of(L"\\/") + 1);
 
     // Decode on a worker thread while the window is set up.
-    HRESULT decodeHr = E_FAIL;
-    std::thread decoder([&] {
-        decodeHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-        if (SUCCEEDED(decodeHr)) {
-            decodeHr = DecodeImage(g.path.c_str(), g.image);
-            CoUninitialize();
-        }
-    });
+    HRESULT decodeHr = S_OK;
+    std::thread decoder;
+    if (!g.path.empty()) {
+        decoder = std::thread([&] {
+            decodeHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            if (SUCCEEDED(decodeHr)) {
+                decodeHr = DecodeImage(g.path.c_str(), g.image);
+                CoUninitialize();
+            }
+        });
+    }
 
     g.hwnd = CreateMainWindow(instance);
-    decoder.join();
+    if (decoder.joinable()) decoder.join();
     if (FAILED(decodeHr)) {
         ShowError(decodeHr);
         return 1;
@@ -618,7 +626,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
     if (!g.hwnd) return 1;
 
     g.imageDC = CreateCompatibleDC(nullptr);
-    if (!g.imageDC || !SelectObject(g.imageDC, g.image.bitmap)) return 1;
+    if (!g.imageDC || (g.image.bitmap && !SelectObject(g.imageDC, g.image.bitmap))) return 1;
     g.imageW = float(g.image.width);
     g.imageH = float(g.image.height);
 
