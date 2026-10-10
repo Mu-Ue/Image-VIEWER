@@ -111,7 +111,8 @@ void LayoutMenuBar(UINT dpi) {
 
     const int pad = MulDiv(4, dpi, 96);
     bar.height = MulDiv(32, dpi, 96);
-    bar.fileButton = {pad, pad, pad + text.cx + MulDiv(20, dpi, 96), bar.height - pad};
+    // Flush left so the button lines up with its popup, which opens at the window edge.
+    bar.fileButton = {0, pad, text.cx + MulDiv(20, dpi, 96), bar.height - pad};
 }
 
 int MenuBarHeight() {
@@ -121,7 +122,8 @@ int MenuBarHeight() {
 void ShowFileMenu(bool keyboard) {
     bar.menuOpen = true;
     RedrawWindow(bar.hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
-    RECT r = bar.fileButton;
+    // Open below the whole bar, not over its bottom padding.
+    RECT r = {bar.fileButton.left, 0, bar.fileButton.right, bar.height};
     MapWindowPoints(bar.hwnd, nullptr, reinterpret_cast<POINT*>(&r), 2);
     TPMPARAMS params{sizeof(params), r};
     if (keyboard) PostMessageW(bar.parent, WM_KEYDOWN, VK_DOWN, 0);  // select the first item
