@@ -60,13 +60,27 @@ std::wstring RunFileDialog(HWND owner, const wchar_t* kind, const std::wstring& 
     STARTUPINFOW si{sizeof(si)};
     si.dwFlags = STARTF_USESTDHANDLES;
     si.hStdOutput = write;
+    // The helper runs in a job that is killed when this process exits, so its dialog never outlives the viewer.
+    static const HANDLE job = [] {
+        const HANDLE h = CreateJobObjectW(nullptr, nullptr);
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (h && !SetInformationJobObject(h, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+            CloseHandle(h);
+            return HANDLE(nullptr);
+        }
+        return h;
+    }();
     PROCESS_INFORMATION pi{};
-    const BOOL started = CreateProcessW(exe, cmd.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi);
+    const BOOL started = job && CreateProcessW(exe, cmd.data(), nullptr, nullptr, TRUE, CREATE_SUSPENDED, nullptr,
+                                               nullptr, &si, &pi);
     CloseHandle(write);
     if (!started) {
         CloseHandle(read);
         return {};
     }
+    if (!AssignProcessToJobObject(job, pi.hProcess)) TerminateProcess(pi.hProcess, 1);
+    ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
     AllowSetForegroundWindow(pi.dwProcessId);
 
@@ -85,6 +99,7 @@ std::wstring RunFileDialog(HWND owner, const wchar_t* kind, const std::wstring& 
             DispatchMessageW(&msg);
         }
     }
+    if (quit) TerminateProcess(pi.hProcess, 1);
     EnableWindow(owner, TRUE);
     SetForegroundWindow(owner);
     CloseHandle(pi.hProcess);
