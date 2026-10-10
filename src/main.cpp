@@ -34,6 +34,8 @@ constexpr COLORREF kBackground = 0x000000;  // black
 constexpr float kMaxZoom = 64.0f;
 constexpr float kZoomStep = 1.25f;
 
+enum Command : UINT { kCmdOpen = 1 };
+
 struct Image {
     HBITMAP bitmap = nullptr;  // 24bpp or palettized top-down DIB section, composited over kBackground
     UINT width = 0;
@@ -417,10 +419,64 @@ void PlaceWindow() {
         rc.right = std::max(LONG(std::lround(g.imageW * scale)), LONG(MulDiv(480, dpi, 96)));
         rc.bottom = std::max(LONG(std::lround(g.imageH * scale)), LONG(MulDiv(320, dpi, 96)));
     }
-    AdjustWindowRectExForDpi(&rc, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi);
+    AdjustWindowRectExForDpi(&rc, WS_OVERLAPPEDWINDOW, TRUE, 0, dpi);
     const int w = rc.right - rc.left, h = rc.bottom - rc.top;
     SetWindowPos(g.hwnd, nullptr, work.left + (int(workW) - w) / 2, work.top + (int(workH) - h) / 2,
                  w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+bool PickFile(std::wstring& path) {
+    wchar_t buffer[32768] = L"";
+    OPENFILENAMEW ofn{sizeof(ofn)};
+    ofn.hwndOwner = g.hwnd;
+    ofn.lpstrFilter = kFileFilter;
+    ofn.lpstrFile = buffer;
+    ofn.nMaxFile = ARRAYSIZE(buffer);
+    ofn.lpstrTitle = kAppName;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    if (!GetOpenFileNameW(&ofn)) return false;
+    path = buffer;
+    return true;
+}
+
+void ShowError(HRESULT hr, const std::wstring& name) {
+    std::wstring message = L"Can't open \"" + name + L"\".";
+    if (hr == WINCODEC_ERR_COMPONENTNOTFOUND) {
+        message += L"\n\nThis format isn't supported. Codecs for HEIC/AVIF are available from the Microsoft Store.";
+    } else if (hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) || hr == HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND)) {
+        message += L"\n\nThe file doesn't exist.";
+    }
+    MessageBoxW(g.hwnd, message.c_str(), kAppName, MB_OK | MB_ICONERROR);
+}
+
+// Shows a decoded image, replacing the current one.
+void SetImage(const Image& image, std::wstring name) {
+    SelectObject(g.imageDC, image.bitmap);
+    if (g.image.bitmap) DeleteObject(g.image.bitmap);
+    g.image = image;
+    g.name = std::move(name);
+    g.imageW = float(image.width);
+    g.imageH = float(image.height);
+    g.zoom = FitZoom();
+    g.fit = true;
+    g.shownPercent = -1;
+    ClampOffset();
+    UpdateTitle();
+    InvalidateRect(g.hwnd, nullptr, FALSE);
+}
+
+void Open() {
+    std::wstring path;
+    if (!PickFile(path)) return;
+    std::wstring name = path.substr(path.find_last_of(L"\\/") + 1);
+    Image image;
+    const HRESULT hr = DecodeImage(path.c_str(), image);
+    if (FAILED(hr)) {
+        ShowError(hr, name);
+        return;
+    }
+    g.path = std::move(path);
+    SetImage(image, std::move(name));
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -470,7 +526,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                    float(GET_X_LPARAM(lp)), float(GET_Y_LPARAM(lp)));
             return 0;
         }
+        case WM_COMMAND:
+            switch (LOWORD(wp)) {
+                case kCmdOpen: Open(); break;
+            }
+            return 0;
         case WM_KEYDOWN: {
+            if (GetKeyState(VK_CONTROL) < 0) {
+                switch (wp) {
+                    case 'O': Open(); break;
+                }
+                return 0;
+            }
             const float cx = g.clientW / 2, cy = g.clientH / 2;
             switch (wp) {
                 case VK_OEM_PLUS: case VK_ADD: ZoomAt(g.zoom * kZoomStep, cx, cy); break;
@@ -505,8 +572,13 @@ HWND CreateMainWindow(HINSTANCE instance) {
     wc.lpszClassName = kAppId;
     if (!RegisterClassExW(&wc)) return nullptr;
 
+    HMENU file = CreatePopupMenu();
+    AppendMenuW(file, MF_STRING, kCmdOpen, L"&Open…\tCtrl+O");
+    HMENU menu = CreateMenu();
+    AppendMenuW(menu, MF_POPUP, UINT_PTR(file), L"&File");
+
     HWND hwnd = CreateWindowExW(0, kAppId, kAppName, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
-                                CW_USEDEFAULT, CW_USEDEFAULT, nullptr, nullptr, instance, nullptr);
+                                CW_USEDEFAULT, CW_USEDEFAULT, nullptr, menu, instance, nullptr);
     if (hwnd) {
         // Dark title bar that blends into the canvas (caption color is Windows 11 only).
         const BOOL dark = TRUE;
@@ -524,19 +596,6 @@ std::wstring Unquote(const wchar_t* s) {
     arg = arg.substr(first, arg.find_last_not_of(L" \t") - first + 1);
     if (arg.size() >= 2 && arg.front() == L'"' && arg.back() == L'"') arg = arg.substr(1, arg.size() - 2);
     return arg;
-}
-
-bool PickFile(std::wstring& path) {
-    wchar_t buffer[32768] = L"";
-    OPENFILENAMEW ofn{sizeof(ofn)};
-    ofn.lpstrFilter = kFileFilter;
-    ofn.lpstrFile = buffer;
-    ofn.nMaxFile = ARRAYSIZE(buffer);
-    ofn.lpstrTitle = kAppName;
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    if (!GetOpenFileNameW(&ofn)) return false;
-    path = buffer;
-    return true;
 }
 
 LSTATUS SetString(const std::wstring& key, const wchar_t* name, const std::wstring& value) {
@@ -584,16 +643,6 @@ int Unregister() {
     return 0;
 }
 
-void ShowError(HRESULT hr) {
-    std::wstring message = L"Can't open \"" + g.name + L"\".";
-    if (hr == WINCODEC_ERR_COMPONENTNOTFOUND) {
-        message += L"\n\nThis format isn't supported. Codecs for HEIC/AVIF are available from the Microsoft Store.";
-    } else if (hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) || hr == HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND)) {
-        message += L"\n\nThe file doesn't exist.";
-    }
-    MessageBoxW(nullptr, message.c_str(), kAppName, MB_OK | MB_ICONERROR);
-}
-
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
@@ -605,13 +654,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
     g.name = g.path.substr(g.path.find_last_of(L"\\/") + 1);
 
     // Decode on a worker thread while the window is set up.
+    Image image;
     HRESULT decodeHr = S_OK;
     std::thread decoder;
     if (!g.path.empty()) {
         decoder = std::thread([&] {
             decodeHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
             if (SUCCEEDED(decodeHr)) {
-                decodeHr = DecodeImage(g.path.c_str(), g.image);
+                decodeHr = DecodeImage(g.path.c_str(), image);
                 CoUninitialize();
             }
         });
@@ -620,15 +670,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
     g.hwnd = CreateMainWindow(instance);
     if (decoder.joinable()) decoder.join();
     if (FAILED(decodeHr)) {
-        ShowError(decodeHr);
+        ShowError(decodeHr, g.name);
         return 1;
     }
     if (!g.hwnd) return 1;
 
     g.imageDC = CreateCompatibleDC(nullptr);
-    if (!g.imageDC || (g.image.bitmap && !SelectObject(g.imageDC, g.image.bitmap))) return 1;
-    g.imageW = float(g.image.width);
-    g.imageH = float(g.image.height);
+    if (!g.imageDC) return 1;
+    if (image.bitmap) SetImage(image, g.name);
 
     PlaceWindow();
     ShowWindow(g.hwnd, showCmd);

@@ -26,6 +26,7 @@ ImageViewer.exe [photo.jpg]
 | Double-click             | Toggle fit / 100%         |
 | `+` / `-`                | Zoom in / out             |
 | `0` / `1`                | Fit / 100%                |
+| `Ctrl+O`                 | Open                      |
 | `Esc`                    | Close                     |
 
 ## Set as default viewer
