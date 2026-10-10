@@ -12,6 +12,7 @@
 #include "imaging/encoder.h"
 #include "platform/clipboard.h"
 #include "platform/file_dialog.h"
+#include "ui/downscale.h"
 #include "ui/menu_bar.h"
 
 namespace {
@@ -38,8 +39,25 @@ struct Viewer {
 } g;
 
 void Render(HDC dc) {
-    // Only stretch the part of the image that is on screen.
     const float z = g.zoom;
+    const RECT client{0, 0, LONG(g.clientW), LONG(g.clientH)};
+    if (z < 1.0f && g.image.bitmap) {
+        // Shrunk: each screen pixel is the exact average of its image area, computed only where painted.
+        const float ox = std::round(g.offsetX), oy = std::round(g.offsetY);
+        const int x = int(ox), y = int(oy);
+        const int w = int(std::lround(ox + g.image.width * z)) - x;
+        const int h = int(std::lround(oy + g.image.height * z)) - y;
+        RECT box;
+        GetClipBox(dc, &box);
+        IntersectRect(&box, &box, &client);
+        if (DrawDownscaled(dc, g.imageDC, x, y, w, h, box)) {
+            ExcludeClipRect(dc, x, y, x + w, y + h);
+            FillRect(dc, &client, g.background);
+            return;
+        }
+    }
+
+    // Only stretch the part of the image that is on screen.
     const int sx0 = std::max(0, int(std::floor(-g.offsetX / z)));
     const int sy0 = std::max(0, int(std::floor(-g.offsetY / z)));
     const int sx1 = std::min(int(g.image.width), int(std::ceil((g.clientW - g.offsetX) / z)));
@@ -53,7 +71,6 @@ void Render(HDC dc) {
         StretchBlt(dc, dx0, dy0, dx1 - dx0, dy1 - dy0, g.imageDC, sx0, sy0, sx1 - sx0, sy1 - sy0, SRCCOPY);
         ExcludeClipRect(dc, dx0, dy0, dx1, dy1);
     }
-    const RECT client{0, 0, LONG(g.clientW), LONG(g.clientH)};
     FillRect(dc, &client, g.background);
 }
 
