@@ -22,7 +22,11 @@ set_source_files_properties(res/app.rc PROPERTIES OBJECT_DEPENDS ${CMAKE_CURRENT
 target_include_directories(ImageVIEWER PRIVATE src)
 target_compile_definitions(ImageVIEWER PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_compile_options(ImageVIEWER PRIVATE /W4 /permissive- /utf-8 /sdl /guard:cf)
-target_link_libraries(ImageVIEWER PRIVATE gdi32 imm32 dwmapi delayimp)
+# List the libraries explicitly instead of CMake's defaults (which import ole32.dll). onecore_apiset comes
+# last, so it only supplies the COM functions, which then bind straight to combase.dll.
+set(CMAKE_CXX_STANDARD_LIBRARIES "")
+target_link_libraries(ImageVIEWER PRIVATE delayimp kernel32 user32 gdi32 imm32 dwmapi shell32 comdlg32 advapi32 uuid
+                      onecore_apiset)
 # Only needed for the file picker and --register; keep them off the startup path.
 target_link_options(ImageVIEWER PRIVATE /DELAYLOAD:comdlg32.dll /DELAYLOAD:shell32.dll)
 # Control-flow guard, shadow stack, and DLL imports from System32 only (no planted DLLs next to the exe).
