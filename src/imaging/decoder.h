@@ -21,6 +21,25 @@ struct Image {
     bool exact = false;  // the bitmap holds every source pixel unchanged, so it can stand in for the source
 };
 
+// The WIC factory, made straight from windowscodecs.dll: CoCreateInstance would first look the class up
+// in the COM catalog, which loads clbcatq.dll for good. Unloads the DLL again when destroyed, as COM would,
+// so every WIC object must be released first.
+class WicFactory {
+public:
+    WicFactory();
+    ~WicFactory();
+    WicFactory(const WicFactory&) = delete;
+    WicFactory& operator=(const WicFactory&) = delete;
+
+    HRESULT hr = S_OK;
+    IWICImagingFactory* Get() const { return factory_.Get(); }
+    IWICImagingFactory* operator->() const { return factory_.Get(); }
+
+private:
+    HMODULE module_ = nullptr;
+    Microsoft::WRL::ComPtr<IWICImagingFactory> factory_;
+};
+
 // Opens the upright image: the chosen frame, scaled to fit maxSize (0 = no limit), EXIF orientation applied.
 // scaled, if given, is set to whether it had to be scaled down. If orientation is given, it is set to the
 // EXIF orientation (1-8) instead of applying it, and width and height are those of the stored pixels.

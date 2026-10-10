@@ -251,6 +251,24 @@ HRESULT CreateDecoder(IWICImagingFactory* wic, IStream* stream, ComPtr<IWICBitma
 
 }  // namespace
 
+WicFactory::WicFactory() {
+    module_ = LoadLibraryExW(L"windowscodecs.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    const auto getClassObject =
+        module_ ? reinterpret_cast<decltype(&DllGetClassObject)>(GetProcAddress(module_, "DllGetClassObject")) : nullptr;
+    if (!getClassObject) {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        return;
+    }
+    ComPtr<IClassFactory> classFactory;
+    hr = getClassObject(CLSID_WICImagingFactory, IID_PPV_ARGS(&classFactory));
+    if (SUCCEEDED(hr)) hr = classFactory->CreateInstance(nullptr, IID_PPV_ARGS(&factory_));
+}
+
+WicFactory::~WicFactory() {
+    factory_.Reset();
+    if (module_) FreeLibrary(module_);
+}
+
 HRESULT OpenSource(IWICImagingFactory* wic, const Source& src, UINT maxSize, ComPtr<IWICBitmapSource>& source,
                    UINT& width, UINT& height, bool* scaled, int* orientation) {
     if (scaled) *scaled = false;
@@ -316,9 +334,8 @@ HRESULT OpenSource(IWICImagingFactory* wic, const Source& src, UINT maxSize, Com
 }
 
 HRESULT DecodeImage(const Source& src, Image& out) {
-    ComPtr<IWICImagingFactory> wic;
-    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                                  IID_PPV_ARGS(&wic));
+    const WicFactory wic;
+    HRESULT hr = wic.hr;
     ComPtr<IWICBitmapSource> source;
     UINT width = 0, height = 0;  // of the source, before orientation is applied
     bool scaled = false;

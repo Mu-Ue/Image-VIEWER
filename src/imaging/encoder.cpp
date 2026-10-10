@@ -34,8 +34,8 @@ HRESULT SaveImage(const Source& src, const std::wstring& path) {
 
     HRESULT hr;
     {
-        ComPtr<IWICImagingFactory> wic;
-        hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic));
+        const WicFactory wic;
+        hr = wic.hr;
         ComPtr<IWICBitmapSource> source;
         UINT width = 0, height = 0;
         if (SUCCEEDED(hr)) hr = OpenSource(wic.Get(), src, 0, source, width, height);
