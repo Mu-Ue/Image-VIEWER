@@ -136,6 +136,8 @@ void ShowError(HRESULT hr, const std::wstring& name) {
     std::wstring message = L"Can't open \"" + name + L"\".";
     if (hr == WINCODEC_ERR_UNKNOWNIMAGEFORMAT) {
         message += L"\n\nIt isn't a supported image.";
+    } else if (hr == WINCODEC_ERR_IMAGESIZEOUTOFRANGE) {
+        message += L"\n\nIt's too large to open.";
     } else if (hr == WINCODEC_ERR_COMPONENTNOTFOUND) {
         message += L"\n\nThis format isn't supported. Codecs for HEIC/AVIF are available from the Microsoft Store.";
     } else if (hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) || hr == HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND)) {

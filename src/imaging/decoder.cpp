@@ -175,6 +175,7 @@ HRESULT OpenSource(IWICImagingFactory* wic, const Source& src, UINT maxSize, Com
     if (SUCCEEDED(hr)) hr = frame->GetSize(&width, &height);
     if (FAILED(hr)) return hr;
     if (width == 0 || height == 0) return WINCODEC_ERR_BADIMAGE;
+    if (UINT64(width) * height > kMaxSourcePixels) return WINCODEC_ERR_IMAGESIZEOUTOFRANGE;
 
     source = frame;
     if (maxSize && (width > maxSize || height > maxSize)) {
