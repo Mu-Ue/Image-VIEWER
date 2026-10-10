@@ -4,7 +4,7 @@ A minimal, fast native image viewer for Windows (Win32 + WIC + GDI).
 
 ## Build
 
-Requires Visual Studio (or Build Tools) with the C++ workload. From a Developer Command Prompt:
+Requires Visual Studio (or Build Tools) with the C++ workload. Run `build.bat`, or from a Developer Command Prompt:
 
 ```
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
