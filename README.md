@@ -1,6 +1,6 @@
 # Image Viewer
 
-A minimal, fast native image viewer for Windows (Win32 + WIC + Direct2D).
+A minimal, fast native image viewer for Windows (Win32 + WIC + GDI).
 
 ## Build
 
