@@ -20,7 +20,9 @@ add_executable(ImageViewer WIN32
     res/app.manifest)
 target_include_directories(ImageViewer PRIVATE src)
 target_compile_definitions(ImageViewer PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_compile_options(ImageViewer PRIVATE /W4 /permissive- /utf-8)
+target_compile_options(ImageViewer PRIVATE /W4 /permissive- /utf-8 /sdl /guard:cf)
 target_link_libraries(ImageViewer PRIVATE gdi32 windowscodecs dwmapi delayimp)
 # Only needed for the file picker and --register; keep them off the startup path.
 target_link_options(ImageViewer PRIVATE /DELAYLOAD:comdlg32.dll /DELAYLOAD:shell32.dll)
+# Control-flow guard, shadow stack, and DLL imports from System32 only (no planted DLLs next to the exe).
+target_link_options(ImageViewer PRIVATE /GUARD:CF /CETCOMPAT /DEPENDENTLOADFLAG:0x800)

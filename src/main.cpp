@@ -9,6 +9,17 @@
 
 namespace {
 
+// Loads DLLs only from System32 and never from network shares or low-integrity locations,
+// so a DLL planted next to the exe or in the current folder is never picked up.
+void HardenProcess() {
+    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
+    PROCESS_MITIGATION_IMAGE_LOAD_POLICY policy{};
+    policy.NoRemoteImages = 1;
+    policy.NoLowMandatoryLabelImages = 1;
+    policy.PreferSystem32Images = 1;
+    SetProcessMitigationPolicy(ProcessImageLoadPolicy, &policy, sizeof(policy));
+}
+
 std::wstring Unquote(const wchar_t* s) {
     std::wstring arg(s ? s : L"");
     const auto first = arg.find_first_not_of(L" \t");
@@ -21,6 +32,7 @@ std::wstring Unquote(const wchar_t* s) {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
+    HardenProcess();
     if (wcsncmp(cmdLine, L"--dialog ", 9) == 0) return DialogMain();
     std::wstring path = Unquote(cmdLine);
     if (path == L"--register") return Register();
