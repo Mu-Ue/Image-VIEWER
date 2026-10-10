@@ -70,9 +70,14 @@ HRESULT SaveImage(const Source& src, const std::wstring& path) {
         format = sourceFormat;
         if (SUCCEEDED(hr)) hr = frame->SetPixelFormat(&format);
         if (SUCCEEDED(hr) && format != sourceFormat) {
-            ComPtr<IWICBitmapSource> converted;
-            hr = WICConvertBitmapSource(format, source.Get(), &converted);
-            source = converted;
+            // Same as WICConvertBitmapSource, without linking windowscodecs.dll into every launch.
+            ComPtr<IWICFormatConverter> converter;
+            hr = wic->CreateFormatConverter(&converter);
+            if (SUCCEEDED(hr)) {
+                hr = converter->Initialize(source.Get(), format, WICBitmapDitherTypeNone, nullptr, 0.0,
+                                           WICBitmapPaletteTypeCustom);
+            }
+            source = converter;
         } else if (SUCCEEDED(hr)) {
             ComPtr<IWICPalette> palette;
             if (SUCCEEDED(wic->CreatePalette(&palette)) && SUCCEEDED(source->CopyPalette(palette.Get()))) {
