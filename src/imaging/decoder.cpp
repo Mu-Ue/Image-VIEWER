@@ -111,13 +111,14 @@ struct Palette {
     static constexpr UINT32 kUsed = 0x1000000;
     UINT32 colors[256];
     UINT count = 0;
-    UINT32 keys[512] = {};  // color | kUsed, 0 = empty slot
-    BYTE indices[512];
+    UINT32 keys[4096] = {};  // color | kUsed, 0 = empty slot
+    BYTE indices[4096];
 
     // Returns the color's index, adding it if new, or -1 once the palette is full.
     int Find(UINT32 color) {
-        UINT i = (color * 0x9E3779B1u) >> 23;
-        for (; keys[i] != 0; i = (i + 1) & 511) {
+        // Folding the high bits in first keeps palettes built from regular color steps from clustering.
+        UINT i = ((color ^ color >> 15) * 0x9E3779B1u) >> 20;
+        for (; keys[i] != 0; i = (i + 1) & 4095) {
             if (keys[i] == (color | kUsed)) return indices[i];
         }
         if (count == 256) return -1;
