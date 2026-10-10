@@ -28,6 +28,7 @@ ImageViewer.exe [photo.jpg]
 | `0` / `1`                | Fit / 100%                |
 | `Ctrl+O`                 | Open                      |
 | `Ctrl+V`                 | Paste image               |
+| `Ctrl+S`                 | Save as PNG or JPEG       |
 | `Esc`                    | Close                     |
 
 ## Set as default viewer
