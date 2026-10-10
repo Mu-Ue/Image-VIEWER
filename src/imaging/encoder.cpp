@@ -2,6 +2,26 @@
 
 using Microsoft::WRL::ComPtr;
 
+namespace {
+
+// Creates a new, empty file next to path to write into, never reusing an existing one.
+std::wstring CreateTempFile(const std::wstring& path) {
+    const std::wstring prefix = path + L"." + std::to_wstring(GetCurrentProcessId()) + L".";
+    for (UINT i = 0; i < 100; ++i) {
+        std::wstring temp = prefix + std::to_wstring(i) + L".tmp";
+        const HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
+                                        nullptr);
+        if (file != INVALID_HANDLE_VALUE) {
+            CloseHandle(file);
+            return temp;
+        }
+        if (GetLastError() != ERROR_FILE_EXISTS) break;
+    }
+    return {};
+}
+
+}  // namespace
+
 // Writes a temporary file first so a failure never leaves a partial file and the source itself can
 // be overwritten.
 HRESULT SaveImage(const Source& src, const std::wstring& path) {
@@ -9,7 +29,8 @@ HRESULT SaveImage(const Source& src, const std::wstring& path) {
     const wchar_t* ext = dot != std::wstring::npos && path[dot] == L'.' ? path.c_str() + dot : L"";
     const bool jpeg = CompareStringOrdinal(ext, -1, L".jpg", -1, TRUE) == CSTR_EQUAL ||
                       CompareStringOrdinal(ext, -1, L".jpeg", -1, TRUE) == CSTR_EQUAL;
-    const std::wstring temp = path + L".tmp";
+    const std::wstring temp = CreateTempFile(path);
+    if (temp.empty()) return HRESULT_FROM_WIN32(GetLastError());
 
     HRESULT hr;
     {
@@ -21,12 +42,12 @@ HRESULT SaveImage(const Source& src, const std::wstring& path) {
         ComPtr<IWICStream> stream;
         if (SUCCEEDED(hr)) hr = wic->CreateStream(&stream);
         if (SUCCEEDED(hr)) hr = stream->InitializeFromFilename(temp.c_str(), GENERIC_WRITE);
-        if (FAILED(hr)) return hr;
 
         ComPtr<IWICBitmapEncoder> encoder;
         ComPtr<IWICBitmapFrameEncode> frame;
         ComPtr<IPropertyBag2> options;
-        hr = wic->CreateEncoder(jpeg ? GUID_ContainerFormatJpeg : GUID_ContainerFormatPng, nullptr, &encoder);
+        const GUID& container = jpeg ? GUID_ContainerFormatJpeg : GUID_ContainerFormatPng;
+        if (SUCCEEDED(hr)) hr = wic->CreateEncoder(container, nullptr, &encoder);
         if (SUCCEEDED(hr)) hr = encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache);
         if (SUCCEEDED(hr)) hr = encoder->CreateNewFrame(&frame, &options);
         if (SUCCEEDED(hr) && jpeg) {  // best quality, no chroma subsampling
