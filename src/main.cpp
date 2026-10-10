@@ -137,26 +137,36 @@ struct Palette {
     }
 };
 
-HRESULT DecodeImage(const wchar_t* path, Image& out) {
-    ComPtr<IWICImagingFactory> wic;
-    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                                  IID_PPV_ARGS(&wic));
+// Where an image comes from: a file, or an in-memory copy of pasted data.
+struct Source {
+    std::wstring path;
+    ComPtr<IStream> stream;
+};
+
+// Opens the upright image: the chosen frame, scaled to fit maxSize (0 = no limit), EXIF orientation applied.
+HRESULT OpenSource(IWICImagingFactory* wic, const Source& src, UINT maxSize, ComPtr<IWICBitmapSource>& source,
+                   UINT& width, UINT& height) {
     ComPtr<IWICBitmapDecoder> decoder;
-    if (SUCCEEDED(hr)) {
-        hr = wic->CreateDecoderFromFilename(path, nullptr, GENERIC_READ,
+    HRESULT hr;
+    if (src.stream) {
+        hr = src.stream->Seek({}, STREAM_SEEK_SET, nullptr);
+        if (SUCCEEDED(hr)) {
+            hr = wic->CreateDecoderFromStream(src.stream.Get(), nullptr, WICDecodeMetadataCacheOnDemand, &decoder);
+        }
+    } else {
+        hr = wic->CreateDecoderFromFilename(src.path.c_str(), nullptr, GENERIC_READ,
                                             WICDecodeMetadataCacheOnDemand, &decoder);
     }
     ComPtr<IWICBitmapFrameDecode> frame;
-    if (SUCCEEDED(hr)) hr = GetFrame(wic.Get(), decoder.Get(), frame);
-    UINT width = 0, height = 0;
+    if (SUCCEEDED(hr)) hr = GetFrame(wic, decoder.Get(), frame);
     if (SUCCEEDED(hr)) hr = frame->GetSize(&width, &height);
     if (FAILED(hr)) return hr;
     if (width == 0 || height == 0) return WINCODEC_ERR_BADIMAGE;
 
-    ComPtr<IWICBitmapSource> source = frame;
-    if (width > kMaxBitmapSize || height > kMaxBitmapSize) {
+    source = frame;
+    if (maxSize && (width > maxSize || height > maxSize)) {
         // Scaling at the decoder lets codecs like JPEG decode at reduced size directly.
-        const double scale = double(kMaxBitmapSize) / std::max(width, height);
+        const double scale = double(maxSize) / std::max(width, height);
         width = std::max(1u, UINT(width * scale));
         height = std::max(1u, UINT(height * scale));
         ComPtr<IWICBitmapScaler> scaler;
@@ -187,6 +197,17 @@ HRESULT DecodeImage(const wchar_t* path, Image& out) {
         if (orientation >= 5) std::swap(width, height);
         source = rotator;
     }
+    return S_OK;
+}
+
+HRESULT DecodeImage(const Source& src, Image& out) {
+    ComPtr<IWICImagingFactory> wic;
+    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                  IID_PPV_ARGS(&wic));
+    ComPtr<IWICBitmapSource> source;
+    UINT width = 0, height = 0;
+    if (SUCCEEDED(hr)) hr = OpenSource(wic.Get(), src, kMaxBitmapSize, source, width, height);
+    if (FAILED(hr)) return hr;
 
     ComPtr<IWICFormatConverter> converter;
     hr = wic->CreateFormatConverter(&converter);
@@ -315,7 +336,7 @@ HRESULT DecodeImage(const wchar_t* path, Image& out) {
 
 struct Viewer {
     HWND hwnd = nullptr;
-    std::wstring path;
+    Source source;  // of the current image, re-read when saving
     std::wstring name;
 
     Image image;
@@ -465,18 +486,89 @@ void SetImage(const Image& image, std::wstring name) {
     InvalidateRect(g.hwnd, nullptr, FALSE);
 }
 
-void Open() {
-    std::wstring path;
-    if (!PickFile(path)) return;
-    std::wstring name = path.substr(path.find_last_of(L"\\/") + 1);
+// Decodes and shows an image, keeping the current one if that fails.
+void Load(Source src, std::wstring name) {
     Image image;
-    const HRESULT hr = DecodeImage(path.c_str(), image);
+    const HRESULT hr = DecodeImage(src, image);
     if (FAILED(hr)) {
         ShowError(hr, name);
         return;
     }
-    g.path = std::move(path);
+    g.source = std::move(src);
     SetImage(image, std::move(name));
+}
+
+void Open() {
+    std::wstring path;
+    if (!PickFile(path)) return;
+    std::wstring name = path.substr(path.find_last_of(L"\\/") + 1);
+    Load({std::move(path)}, std::move(name));
+}
+
+// Copies the clipboard image into a stream: PNG if offered (lossless, keeps alpha), else the DIB
+// as a BMP file. Returns S_FALSE if the clipboard holds no image.
+HRESULT CopyClipboardImage(ComPtr<IStream>& out) {
+    static const UINT pngFormat = RegisterClipboardFormatW(L"PNG");
+    if (!OpenClipboard(g.hwnd)) return HRESULT_FROM_WIN32(GetLastError());
+    const bool png = IsClipboardFormatAvailable(pngFormat);
+    const HGLOBAL data = GetClipboardData(png ? pngFormat : CF_DIB);
+    const BYTE* p = data ? static_cast<const BYTE*>(GlobalLock(data)) : nullptr;
+    if (!p) {
+        CloseClipboard();
+        return S_FALSE;
+    }
+
+    const SIZE_T size = GlobalSize(data);
+    HRESULT hr = S_OK;
+    BITMAPFILEHEADER file{};
+    if (!png) {
+        // The clipboard is shared with other programs, so check the header fits before trusting it.
+        const auto* info = reinterpret_cast<const BITMAPINFOHEADER*>(p);
+        if (size < sizeof(BITMAPINFOHEADER) || info->biSize < sizeof(BITMAPINFOHEADER) || info->biSize > size) {
+            hr = WINCODEC_ERR_BADIMAGE;
+        } else {
+            const UINT64 masks =
+                info->biSize == sizeof(BITMAPINFOHEADER) && info->biCompression == BI_BITFIELDS ? 12 : 0;
+            const UINT64 colors =
+                info->biClrUsed ? info->biClrUsed : info->biBitCount <= 8 ? 1u << info->biBitCount : 0;
+            const UINT64 offset = info->biSize + masks + colors * 4;
+            if (offset > size || size > MAXDWORD - sizeof(file)) {
+                hr = WINCODEC_ERR_BADIMAGE;
+            } else {
+                file.bfType = 0x4D42;  // "BM"
+                file.bfSize = DWORD(sizeof(file) + size);
+                file.bfOffBits = DWORD(sizeof(file) + offset);
+            }
+        }
+    }
+
+    const SIZE_T header = png ? 0 : sizeof(file);
+    HGLOBAL copy = SUCCEEDED(hr) ? GlobalAlloc(GMEM_MOVEABLE, header + size) : nullptr;
+    if (SUCCEEDED(hr) && !copy) hr = E_OUTOFMEMORY;
+    if (copy) {
+        if (BYTE* d = static_cast<BYTE*>(GlobalLock(copy))) {
+            std::copy_n(reinterpret_cast<const BYTE*>(&file), header, d);
+            std::copy_n(p, size, d + header);
+            GlobalUnlock(copy);
+            hr = CreateStreamOnHGlobal(copy, TRUE, &out);
+        } else {
+            hr = E_OUTOFMEMORY;
+        }
+        if (FAILED(hr)) GlobalFree(copy);
+    }
+    GlobalUnlock(data);
+    CloseClipboard();
+    return hr;
+}
+
+void Paste() {
+    Source src;
+    const HRESULT hr = CopyClipboardImage(src.stream);
+    if (hr == S_OK) {
+        Load(std::move(src), L"Pasted image");
+    } else if (FAILED(hr)) {
+        ShowError(hr, L"Pasted image");
+    }
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -535,6 +627,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (GetKeyState(VK_CONTROL) < 0) {
                 switch (wp) {
                     case 'O': Open(); break;
+                    case 'V': Paste(); break;
                 }
                 return 0;
             }
@@ -646,22 +739,22 @@ int Unregister() {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
-    g.path = Unquote(cmdLine);
-    if (g.path == L"--register") return Register();
-    if (g.path == L"--unregister") return Unregister();
+    g.source.path = Unquote(cmdLine);
+    if (g.source.path == L"--register") return Register();
+    if (g.source.path == L"--unregister") return Unregister();
 
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE))) return 1;
-    g.name = g.path.substr(g.path.find_last_of(L"\\/") + 1);
+    g.name = g.source.path.substr(g.source.path.find_last_of(L"\\/") + 1);
 
     // Decode on a worker thread while the window is set up.
     Image image;
     HRESULT decodeHr = S_OK;
     std::thread decoder;
-    if (!g.path.empty()) {
+    if (!g.source.path.empty()) {
         decoder = std::thread([&] {
             decodeHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
             if (SUCCEEDED(decodeHr)) {
-                decodeHr = DecodeImage(g.path.c_str(), image);
+                decodeHr = DecodeImage(g.source, image);
                 CoUninitialize();
             }
         });

@@ -27,6 +27,7 @@ ImageViewer.exe [photo.jpg]
 | `+` / `-`                | Zoom in / out             |
 | `0` / `1`                | Fit / 100%                |
 | `Ctrl+O`                 | Open                      |
+| `Ctrl+V`                 | Paste image               |
 | `Esc`                    | Close                     |
 
 ## Set as default viewer
