@@ -1,6 +1,5 @@
 #include <windows.h>
 #include <imm.h>
-#include <objbase.h>
 
 #include <string>
 
@@ -43,7 +42,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
     // in its own process and keeps it).
     ImmDisableIME(DWORD(-1));
 
-    if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE))) return 1;
     if (!StartViewer(instance, std::move(path), showCmd)) return 1;
 
     MSG msg;

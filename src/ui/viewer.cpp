@@ -181,10 +181,24 @@ void CloseImage() {
     InvalidateRect(g.hwnd, nullptr, FALSE);
 }
 
+// Runs work on a new thread with its own COM apartment, setting hr to its result. The UI thread never
+// starts COM, so when the thread ends COM unloads WIC and its codecs instead of keeping them in memory.
+template <class Work>
+std::thread ComThread(HRESULT& hr, Work work) {
+    return std::thread([&hr, work] {
+        hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        if (SUCCEEDED(hr)) {
+            hr = work();
+            CoUninitialize();
+        }
+    });
+}
+
 // Decodes and shows an image, keeping the current one if that fails.
 void Load(Source src, std::wstring name) {
     Image image;
-    const HRESULT hr = DecodeImage(src, image);
+    HRESULT hr;
+    ComThread(hr, [&] { return DecodeImage(src, image); }).join();
     if (FAILED(hr)) {
         ShowError(hr, name);
         return;
@@ -206,7 +220,9 @@ void SaveAs() {
     if (!g.image.bitmap) return;
     const std::wstring path = RunFileDialog(g.hwnd, L"save", g.name.substr(0, g.name.find_last_of(L'.')));
     if (path.empty()) return;
-    if (FAILED(SaveImage(g.source, path))) {
+    HRESULT hr;
+    ComThread(hr, [&] { return SaveImage(g.source, path); }).join();
+    if (FAILED(hr)) {
         const std::wstring message = L"Can't save \"" + path + L"\".";
         MessageBoxW(g.hwnd, message.c_str(), kAppName, MB_OK | MB_ICONERROR);
     }
@@ -371,15 +387,7 @@ bool StartViewer(HINSTANCE instance, std::wstring path, int showCmd) {
     Image image;
     HRESULT decodeHr = S_OK;
     std::thread decoder;
-    if (!g.source.path.empty()) {
-        decoder = std::thread([&] {
-            decodeHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-            if (SUCCEEDED(decodeHr)) {
-                decodeHr = DecodeImage(g.source, image);
-                CoUninitialize();
-            }
-        });
-    }
+    if (!g.source.path.empty()) decoder = ComThread(decodeHr, [&] { return DecodeImage(g.source, image); });
 
     g.hwnd = CreateMainWindow(instance);
     if (decoder.joinable()) decoder.join();
