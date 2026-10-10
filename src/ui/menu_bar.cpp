@@ -85,6 +85,9 @@ HWND CreateMenuBar(HWND parent, HINSTANCE instance) {
     AppendMenuW(bar.fileMenu, MF_STRING | MF_GRAYED, kCmdNew, L"&New\tCtrl+N");
     AppendMenuW(bar.fileMenu, MF_STRING, kCmdOpen, L"&Open…\tCtrl+O");
     AppendMenuW(bar.fileMenu, MF_STRING | MF_GRAYED, kCmdSaveAs, L"Save &As…\tCtrl+S");
+    // No item is checkable, so drop the empty check-mark column on the left.
+    MENUINFO mi{sizeof(mi), MIM_STYLE, MNS_NOCHECK};
+    SetMenuInfo(bar.fileMenu, &mi);
 
     bar.parent = parent;
     LayoutMenuBar(GetDpiForWindow(parent));
