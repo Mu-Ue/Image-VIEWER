@@ -1,0 +1,26 @@
+#pragma once
+
+#include <windows.h>
+#include <wincodec.h>
+#include <wrl/client.h>
+
+#include <string>
+
+// Where an image comes from: a file, or an in-memory copy of pasted data.
+struct Source {
+    std::wstring path;
+    Microsoft::WRL::ComPtr<IStream> stream;
+};
+
+struct Image {
+    HBITMAP bitmap = nullptr;  // 24bpp or palettized top-down DIB section, composited over kBackground
+    UINT width = 0;
+    UINT height = 0;
+};
+
+// Opens the upright image: the chosen frame, scaled to fit maxSize (0 = no limit), EXIF orientation applied.
+HRESULT OpenSource(IWICImagingFactory* wic, const Source& src, UINT maxSize,
+                   Microsoft::WRL::ComPtr<IWICBitmapSource>& source, UINT& width, UINT& height);
+
+// Decodes into the smallest exact DIB section. Needs COM initialized on the calling thread.
+HRESULT DecodeImage(const Source& src, Image& out);
