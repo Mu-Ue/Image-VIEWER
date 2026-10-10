@@ -26,6 +26,7 @@ ImageViewer.exe [photo.jpg]
 | Double-click             | Toggle fit / 100%         |
 | `+` / `-`                | Zoom in / out             |
 | `0` / `1`                | Fit / 100%                |
+| `Ctrl+N`                 | New (close image)         |
 | `Ctrl+O`                 | Open                      |
 | `Ctrl+V`                 | Paste image               |
 | `Ctrl+S`                 | Save as PNG or JPEG       |

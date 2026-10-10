@@ -38,7 +38,7 @@ constexpr COLORREF kChromeText = 0xE6E6E6;
 constexpr float kMaxZoom = 64.0f;
 constexpr float kZoomStep = 1.25f;
 
-enum Command : UINT { kCmdOpen = 1, kCmdSaveAs };
+enum Command : UINT { kCmdNew = 1, kCmdOpen, kCmdSaveAs };
 
 struct Image {
     HBITMAP bitmap = nullptr;  // 24bpp or palettized top-down DIB section, composited over kBackground
@@ -351,6 +351,7 @@ struct Viewer {
 
     Image image;
     HDC imageDC = nullptr;  // memory DC holding image.bitmap
+    HGDIOBJ emptyBitmap = nullptr;  // imageDC's original bitmap, selected while no image is shown
     HBRUSH background = nullptr;
 
     float imageW = 0, imageH = 0;  // upright size in pixels
@@ -494,7 +495,27 @@ void SetImage(const Image& image, std::wstring name) {
     g.shownPercent = -1;
     ClampOffset();
     UpdateTitle();
+    EnableMenuItem(g.fileMenu, kCmdNew, MF_BYCOMMAND | MF_ENABLED);
     EnableMenuItem(g.fileMenu, kCmdSaveAs, MF_BYCOMMAND | MF_ENABLED);
+    InvalidateRect(g.hwnd, nullptr, FALSE);
+}
+
+// Closes the current image, leaving the empty window.
+void CloseImage() {
+    if (!g.image.bitmap) return;
+    SelectObject(g.imageDC, g.emptyBitmap);
+    DeleteObject(g.image.bitmap);
+    g.image = {};
+    g.source = {};
+    g.name.clear();
+    g.imageW = g.imageH = 0;
+    g.zoom = 1;
+    g.fit = true;
+    g.shownPercent = -1;
+    ClampOffset();
+    SetWindowTextW(g.hwnd, kAppName);
+    EnableMenuItem(g.fileMenu, kCmdNew, MF_BYCOMMAND | MF_GRAYED);
+    EnableMenuItem(g.fileMenu, kCmdSaveAs, MF_BYCOMMAND | MF_GRAYED);
     InvalidateRect(g.hwnd, nullptr, FALSE);
 }
 
@@ -817,6 +838,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_COMMAND:
             switch (LOWORD(wp)) {
+                case kCmdNew: CloseImage(); break;
                 case kCmdOpen: Open(); break;
                 case kCmdSaveAs: SaveAs(); break;
             }
@@ -830,6 +852,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_KEYDOWN: {
             if (GetKeyState(VK_CONTROL) < 0) {
                 switch (wp) {
+                    case 'N': CloseImage(); break;
                     case 'O': Open(); break;
                     case 'S': SaveAs(); break;
                     case 'V': Paste(); break;
@@ -892,6 +915,7 @@ HWND CreateMainWindow(HINSTANCE instance) {
     if (!RegisterClassExW(&wc)) return nullptr;
 
     g.fileMenu = CreatePopupMenu();
+    AppendMenuW(g.fileMenu, MF_STRING | MF_GRAYED, kCmdNew, L"&New\tCtrl+N");
     AppendMenuW(g.fileMenu, MF_STRING, kCmdOpen, L"&Open…\tCtrl+O");
     AppendMenuW(g.fileMenu, MF_STRING | MF_GRAYED, kCmdSaveAs, L"Save &As…\tCtrl+S");
 
@@ -995,6 +1019,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
 
     g.imageDC = CreateCompatibleDC(nullptr);
     if (!g.imageDC) return 1;
+    g.emptyBitmap = GetCurrentObject(g.imageDC, OBJ_BITMAP);
     if (image.bitmap) SetImage(image, g.name);
 
     PlaceWindow();
