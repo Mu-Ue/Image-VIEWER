@@ -2,9 +2,9 @@
 
 #include <windows.h>
 
-constexpr wchar_t kAppId[] = L"ImageViewer";
-constexpr wchar_t kAppName[] = L"Image Viewer";
-constexpr wchar_t kProgId[] = L"ImageViewer.Image";
+constexpr wchar_t kAppId[] = L"ImageVIEWER";
+constexpr wchar_t kAppName[] = L"Image VIEWER";
+constexpr wchar_t kProgId[] = L"ImageVIEWER.Image";
 constexpr const wchar_t* kExtensions[] = {
     L".jpg", L".jpeg", L".jpe", L".jfif", L".png", L".bmp", L".dib", L".gif", L".tif",
     L".tiff", L".ico", L".webp", L".heic", L".heif", L".avif", L".jxr", L".wdp",

@@ -6,7 +6,7 @@
 
 namespace {
 
-constexpr wchar_t kClassName[] = L"ImageViewerBar";
+constexpr wchar_t kClassName[] = L"ImageVIEWERBar";
 
 struct {
     HWND parent = nullptr;

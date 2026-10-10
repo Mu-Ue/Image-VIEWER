@@ -1,4 +1,4 @@
-# Image Viewer
+# Image VIEWER
 
 A minimal, fast native image viewer for Windows (Win32 + WIC + GDI).
 
@@ -11,12 +11,12 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-Output: `build\ImageViewer.exe` (single file, no dependencies).
+Output: `build\Image VIEWER.exe` (single file, no dependencies).
 
 ## Use
 
 ```
-ImageViewer.exe [photo.jpg]
+"Image VIEWER.exe" [photo.jpg]
 ```
 
 | Input                    | Action                    |
@@ -37,7 +37,7 @@ ImageViewer.exe [photo.jpg]
 Put the exe where it will stay, then run:
 
 ```
-ImageViewer.exe --register
+"Image VIEWER.exe" --register
 ```
 
-This opens Settings → Default apps, where you pick Image Viewer. `--unregister` removes it.
+This opens Settings → Default apps, where you pick Image VIEWER. `--unregister` removes it.
