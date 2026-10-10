@@ -6,6 +6,12 @@
 
 #include "config.h"
 
+namespace {
+
+constexpr DWORD kMaxPath = 32768;  // characters, including the terminating null
+
+}  // namespace
+
 int DialogMain() {
     int argc = 0;
     wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -15,7 +21,7 @@ int DialogMain() {
     const bool save = wcscmp(argv[2], L"save") == 0;
     const HWND owner = reinterpret_cast<HWND>(UINT_PTR(_wcstoui64(argv[3], nullptr, 10)));
 
-    wchar_t buffer[32768] = L"";
+    wchar_t buffer[kMaxPath] = L"";
     wcsncpy_s(buffer, argv[4], _TRUNCATE);
     OPENFILENAMEW ofn{sizeof(ofn)};
     ofn.hwndOwner = IsWindow(owner) ? owner : nullptr;
@@ -40,13 +46,16 @@ std::wstring RunFileDialog(HWND owner, const wchar_t* kind, const std::wstring& 
     wchar_t exe[MAX_PATH * 4];
     const DWORD len = GetModuleFileNameW(nullptr, exe, ARRAYSIZE(exe));
     if (len == 0 || len == ARRAYSIZE(exe)) return {};
+    // File names can't hold quotes or backslashes; drop any so the name stays one argument.
+    std::wstring arg = name;
+    std::erase_if(arg, [](wchar_t c) { return c == L'"' || c == L'\\'; });
     std::wstring cmd = L"\"" + std::wstring(exe) + L"\" --dialog " + kind + L" " +
-                       std::to_wstring(UINT_PTR(owner)) + L" \"" + name + L"\"";
+                       std::to_wstring(UINT_PTR(owner)) + L" \"" + arg + L"\"";
 
     // The pipe holds the longest path, so the helper never blocks writing it.
     SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
     HANDLE read = nullptr, write = nullptr;
-    if (!CreatePipe(&read, &write, &sa, 65536 + 4096)) return {};
+    if (!CreatePipe(&read, &write, &sa, kMaxPath * sizeof(wchar_t))) return {};
     SetHandleInformation(read, HANDLE_FLAG_INHERIT, 0);
     STARTUPINFOW si{sizeof(si)};
     si.dwFlags = STARTF_USESTDHANDLES;
@@ -80,10 +89,17 @@ std::wstring RunFileDialog(HWND owner, const wchar_t* kind, const std::wstring& 
     SetForegroundWindow(owner);
     CloseHandle(pi.hProcess);
 
+    // The helper has exited, so the pipe holds its whole answer: one path of whole UTF-16 characters.
     std::wstring path;
-    wchar_t chunk[4096];
-    DWORD n = 0;
-    while (!quit && ReadFile(read, chunk, sizeof(chunk), &n, nullptr) && n) path.append(chunk, n / sizeof(wchar_t));
+    DWORD size = 0;
+    if (!quit && PeekNamedPipe(read, nullptr, 0, nullptr, &size, nullptr) && size % sizeof(wchar_t) == 0 &&
+        size < kMaxPath * sizeof(wchar_t)) {
+        path.resize(size / sizeof(wchar_t));
+        DWORD n = 0;
+        if (!ReadFile(read, path.data(), size, &n, nullptr) || n != size || path.find(L'\0') != path.npos) {
+            path.clear();
+        }
+    }
     CloseHandle(read);
     return path;
 }
