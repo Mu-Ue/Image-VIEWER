@@ -1,6 +1,7 @@
 #include "imaging/decoder.h"
 
 #include <algorithm>
+#include <cstring>
 #include <memory>
 #include <new>
 
@@ -105,21 +106,70 @@ struct Palette {
     }
 };
 
+// The formats this viewer opens, recognized by their first bytes rather than the file name.
+const GUID* SniffFormat(const BYTE* head, ULONG size) {
+    const auto at = [&](ULONG offset, const char* magic, ULONG length) {
+        return size >= offset + length && memcmp(head + offset, magic, length) == 0;
+    };
+    if (at(0, "\xFF\xD8\xFF", 3)) return &GUID_ContainerFormatJpeg;
+    if (at(0, "\x89PNG\r\n\x1A\n", 8)) return &GUID_ContainerFormatPng;
+    if (at(0, "GIF87a", 6) || at(0, "GIF89a", 6)) return &GUID_ContainerFormatGif;
+    if (at(0, "BM", 2)) return &GUID_ContainerFormatBmp;
+    if (at(0, "II*\0", 4) || at(0, "MM\0*", 4)) return &GUID_ContainerFormatTiff;
+    if (at(0, "II\xBC", 3)) return &GUID_ContainerFormatWmp;  // JPEG XR
+    if (at(0, "\0\0\1\0", 4)) return &GUID_ContainerFormatIco;
+    if (at(0, "RIFF", 4) && at(8, "WEBP", 4)) return &GUID_ContainerFormatWebp;
+    if (at(4, "ftyp", 4)) {  // HEIC and AVIF, both read by the HEIF decoder
+        for (const char* brand : {"heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1", "avif", "avis"}) {
+            if (at(8, brand, 4)) return &GUID_ContainerFormatHeif;
+        }
+    }
+    return nullptr;
+}
+
+// Opens a path only if it names a regular file, not a device or pipe such as \\.\CON.
+HRESULT OpenFileStream(IWICImagingFactory* wic, const std::wstring& path, ComPtr<IStream>& out) {
+    const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
+                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return HRESULT_FROM_WIN32(GetLastError());
+    const bool regular = GetFileType(file) == FILE_TYPE_DISK;
+    CloseHandle(file);
+    if (!regular) return WINCODEC_ERR_UNKNOWNIMAGEFORMAT;
+
+    ComPtr<IWICStream> stream;
+    HRESULT hr = wic->CreateStream(&stream);
+    if (SUCCEEDED(hr)) hr = stream->InitializeFromFilename(path.c_str(), GENERIC_READ);
+    if (SUCCEEDED(hr)) out = stream;
+    return hr;
+}
+
+// Creates the decoder for the format the data starts with, and only that one: data is never handed
+// to a codec for a different format than it claims to be, and anything else is rejected.
+HRESULT CreateDecoder(IWICImagingFactory* wic, IStream* stream, ComPtr<IWICBitmapDecoder>& out) {
+    BYTE head[16];
+    ULONG read = 0;
+    HRESULT hr = stream->Seek({}, STREAM_SEEK_SET, nullptr);
+    if (SUCCEEDED(hr)) hr = stream->Read(head, sizeof(head), &read);
+    if (SUCCEEDED(hr)) hr = stream->Seek({}, STREAM_SEEK_SET, nullptr);
+    if (FAILED(hr)) return hr;
+    const GUID* format = SniffFormat(head, read);
+    if (!format) return WINCODEC_ERR_UNKNOWNIMAGEFORMAT;
+
+    ComPtr<IWICBitmapDecoder> decoder;
+    hr = wic->CreateDecoder(*format, &GUID_VendorMicrosoft, &decoder);
+    if (SUCCEEDED(hr)) hr = decoder->Initialize(stream, WICDecodeMetadataCacheOnDemand);
+    if (SUCCEEDED(hr)) out = decoder;
+    return hr;
+}
+
 }  // namespace
 
 HRESULT OpenSource(IWICImagingFactory* wic, const Source& src, UINT maxSize, ComPtr<IWICBitmapSource>& source,
                    UINT& width, UINT& height) {
+    ComPtr<IStream> stream = src.stream;
+    HRESULT hr = stream ? S_OK : OpenFileStream(wic, src.path, stream);
     ComPtr<IWICBitmapDecoder> decoder;
-    HRESULT hr;
-    if (src.stream) {
-        hr = src.stream->Seek({}, STREAM_SEEK_SET, nullptr);
-        if (SUCCEEDED(hr)) {
-            hr = wic->CreateDecoderFromStream(src.stream.Get(), nullptr, WICDecodeMetadataCacheOnDemand, &decoder);
-        }
-    } else {
-        hr = wic->CreateDecoderFromFilename(src.path.c_str(), nullptr, GENERIC_READ,
-                                            WICDecodeMetadataCacheOnDemand, &decoder);
-    }
+    if (SUCCEEDED(hr)) hr = CreateDecoder(wic, stream.Get(), decoder);
     ComPtr<IWICBitmapFrameDecode> frame;
     if (SUCCEEDED(hr)) hr = GetFrame(wic, decoder.Get(), frame);
     if (SUCCEEDED(hr)) hr = frame->GetSize(&width, &height);

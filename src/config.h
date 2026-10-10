@@ -11,7 +11,7 @@ constexpr const wchar_t* kExtensions[] = {
 };
 constexpr wchar_t kFileFilter[] =
     L"Images\0*.jpg;*.jpeg;*.jpe;*.jfif;*.png;*.bmp;*.dib;*.gif;*.tif;*.tiff;*.ico;"
-    L"*.webp;*.heic;*.heif;*.avif;*.jxr;*.wdp\0All files\0*.*\0";
+    L"*.webp;*.heic;*.heif;*.avif;*.jxr;*.wdp\0";
 
 constexpr UINT kMaxBitmapSize = 16384;  // Caps the decoded bitmap at 1 GB.
 constexpr COLORREF kBackground = 0x000000;  // black
