@@ -38,19 +38,36 @@ struct Viewer {
     long shownPercent = -1;
 } g;
 
-void Render(HDC dc) {
+// Draws the image area where update (in image area coordinates) needs it.
+void Render(HDC dc, HRGN update) {
     const float z = g.zoom;
     const RECT client{0, 0, LONG(g.clientW), LONG(g.clientH)};
     if (z < 1.0f && g.image.bitmap) {
-        // Shrunk: each screen pixel is the exact average of its image area, computed only where painted.
+        // Shrunk: each screen pixel is the exact average of its image area, computed only where painted,
+        // one rectangle at a time so the L-shaped strips a diagonal pan uncovers stay small.
         const float ox = std::round(g.offsetX), oy = std::round(g.offsetY);
         const int x = int(ox), y = int(oy);
         const int w = int(std::lround(ox + g.image.width * z)) - x;
         const int h = int(std::lround(oy + g.image.height * z)) - y;
+        union {
+            RGNDATA data;
+            BYTE bytes[sizeof(RGNDATAHEADER) + 8 * sizeof(RECT)];
+        } region;
         RECT box;
-        GetClipBox(dc, &box);
-        IntersectRect(&box, &box, &client);
-        if (DrawDownscaled(dc, g.imageDC, x, y, w, h, box)) {
+        const RECT* rects = &box;
+        DWORD count = 1;
+        if (GetRegionData(update, sizeof(region), &region.data)) {
+            rects = reinterpret_cast<const RECT*>(region.data.Buffer);
+            count = region.data.rdh.nCount;
+        } else {  // too many rectangles: draw their bounds
+            GetClipBox(dc, &box);
+        }
+        bool drawn = true;
+        for (DWORD i = 0; i < count && drawn; ++i) {
+            RECT r;
+            if (IntersectRect(&r, &rects[i], &client)) drawn = DrawDownscaled(dc, g.imageDC, x, y, w, h, r);
+        }
+        if (drawn) {
             ExcludeClipRect(dc, x, y, x + w, y + h);
             FillRect(dc, &client, g.background);
             return;
@@ -106,6 +123,24 @@ void ZoomAt(float zoom, float x, float y) {
     ClampOffset();
     UpdateTitle();
     InvalidateRect(g.hwnd, nullptr, FALSE);
+}
+
+// Moves the image and paints it right away. Shrunk images are exact per pixel relative to the image's
+// top left, so the drawn pixels are scrolled and only the uncovered strips are computed.
+void Pan(float dx, float dy) {
+    const float x0 = std::round(g.offsetX), y0 = std::round(g.offsetY);
+    g.offsetX += dx;
+    g.offsetY += dy;
+    ClampOffset();
+    const int sx = int(std::round(g.offsetX) - x0), sy = int(std::round(g.offsetY) - y0);
+    if (sx == 0 && sy == 0) return;
+    if (g.zoom < 1.0f) {
+        const RECT area{0, g.barH, LONG(g.clientW), g.barH + LONG(g.clientH)};
+        ScrollWindowEx(g.hwnd, sx, sy, &area, &area, nullptr, nullptr, SW_INVALIDATE);
+    } else {
+        InvalidateRect(g.hwnd, nullptr, FALSE);
+    }
+    UpdateWindow(g.hwnd);
 }
 
 void OnSize(float width, float height) {
@@ -262,11 +297,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g.barH = MenuBarHeight();
             return g.bar ? 0 : -1;
         case WM_PAINT: {
+            const HRGN update = CreateRectRgn(0, 0, 0, 0);
+            GetUpdateRgn(hwnd, update, FALSE);
+            OffsetRgn(update, 0, -g.barH);
             PAINTSTRUCT ps;
             const HDC dc = BeginPaint(hwnd, &ps);
             SetViewportOrgEx(dc, 0, g.barH, nullptr);  // the image area starts below the bar
-            Render(dc);
+            Render(dc, update);
             EndPaint(hwnd, &ps);
+            DeleteObject(update);
             return 0;
         }
         case WM_ERASEBKGND:
@@ -291,11 +330,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_MOUSEMOVE:
             if (g.dragging) {
                 const POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-                g.offsetX += float(pt.x - g.dragFrom.x);
-                g.offsetY += float(pt.y - g.dragFrom.y);
+                Pan(float(pt.x - g.dragFrom.x), float(pt.y - g.dragFrom.y));
                 g.dragFrom = pt;
-                ClampOffset();
-                InvalidateRect(hwnd, nullptr, FALSE);
             }
             return 0;
         case WM_LBUTTONUP:
