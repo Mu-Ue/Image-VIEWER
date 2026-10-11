@@ -120,11 +120,13 @@ UINT PngFormat() {
 
 }  // namespace
 
-HRESULT ReadClipboardImage(HWND owner, Source& out) {
+HRESULT ReadClipboardImage(HWND owner, Source& out, UINT64& pngBytes) {
+    pngBytes = 0;
     if (!OpenClipboard(owner)) return HRESULT_FROM_WIN32(GetLastError());
     HRESULT hr = S_FALSE;
     if (IsClipboardFormatAvailable(PngFormat())) {
         hr = CopyImageData(PngFormat(), out.stream);
+        if (hr == S_OK) pngBytes = GlobalSize(GetClipboardData(PngFormat()));
     } else if (IsClipboardFormatAvailable(CF_DIB)) {
         hr = CopyImageData(CF_DIB, out.stream);
     } else if (IsClipboardFormatAvailable(CF_HDROP)) {

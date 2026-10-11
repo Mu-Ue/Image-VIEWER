@@ -16,6 +16,7 @@ add_executable(ImageVIEWER WIN32
     src/platform/registration.cpp
     src/ui/scale.cpp
     src/ui/menu_bar.cpp
+    src/ui/status_bar.cpp
     src/ui/viewer.cpp
     res/app.rc
     res/app.manifest)

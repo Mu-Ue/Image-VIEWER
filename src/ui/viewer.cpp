@@ -15,15 +15,17 @@
 #include "platform/file_dialog.h"
 #include "ui/menu_bar.h"
 #include "ui/scale.h"
+#include "ui/status_bar.h"
 
 namespace {
 
 struct Viewer {
     HWND hwnd = nullptr;
-    HWND bar = nullptr;
-    int barH = 0;
+    HWND bar = nullptr, status = nullptr;
+    int barH = 0, statusH = 0;
     Source source;  // of the current image, re-read when saving
     std::wstring name;
+    std::wstring resolution, size;  // shown in the status bar
 
     Image image;
     HDC imageDC = nullptr;  // memory DC holding image.bitmap
@@ -36,7 +38,6 @@ struct Viewer {
     bool fit = true;
     bool dragging = false;
     POINT dragFrom{};
-    long shownPercent = -1;
     bool fullscreen = false;
     WINDOWPLACEMENT placement{sizeof(WINDOWPLACEMENT)};  // of the window before it went fullscreen
 } g;
@@ -106,12 +107,21 @@ void ClampOffset() {
     g.offsetY = h <= g.clientH ? (g.clientH - h) / 2 : std::clamp(g.offsetY, g.clientH - h, 0.0f);
 }
 
-void UpdateTitle() {
-    if (!g.image.bitmap) return;
-    const long percent = std::lround(g.zoom * 100);
-    if (percent == g.shownPercent) return;
-    g.shownPercent = percent;
-    SetWindowTextW(g.hwnd, (g.name + L"  ·  " + std::to_wstring(percent) + L"%").c_str());
+void UpdateStatus() {
+    SetStatus(g.resolution, g.size, g.image.bitmap ? std::lround(g.zoom * 100) : -1);
+}
+
+// Formats a byte count like Explorer does, in 1024-based units with one decimal above KB.
+std::wstring FormatSize(ULONGLONG bytes) {
+    if (bytes < 1024) return std::to_wstring(bytes) + L" B";
+    if (bytes < 1024 * 1024) return std::to_wstring((bytes + 512) / 1024) + L" KB";
+    const wchar_t* unit = L" MB";
+    ULONGLONG tenths = (bytes * 10 + 512 * 1024) / (1024 * 1024);
+    if (tenths >= 10240) {
+        unit = L" GB";
+        tenths = (tenths + 512) / 1024;
+    }
+    return std::to_wstring(tenths / 10) + L'.' + std::to_wstring(tenths % 10) + unit;
 }
 
 void ZoomAt(float zoom, float x, float y) {
@@ -124,7 +134,7 @@ void ZoomAt(float zoom, float x, float y) {
     g.zoom = zoom;
     g.fit = zoom == fitZoom;
     ClampOffset();
-    UpdateTitle();
+    UpdateStatus();
     InvalidateRect(g.hwnd, nullptr, FALSE);
 }
 
@@ -155,7 +165,7 @@ void OnSize(float width, float height) {
         g.offsetY += dy;
     }
     ClampOffset();
-    UpdateTitle();
+    UpdateStatus();
     InvalidateRect(g.hwnd, nullptr, FALSE);
 }
 
@@ -176,7 +186,7 @@ void PlaceWindow() {
         rc.right = std::max(LONG(std::lround(g.imageW * scale)), LONG(MulDiv(480, dpi, 96)));
         rc.bottom = std::max(LONG(std::lround(g.imageH * scale)), LONG(MulDiv(320, dpi, 96)));
     }
-    rc.bottom += g.barH;
+    rc.bottom += g.barH + g.statusH;
     AdjustWindowRectExForDpi(&rc, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi);
     const int w = rc.right - rc.left, h = rc.bottom - rc.top;
     SetWindowPos(g.hwnd, nullptr, work.left + (int(workW) - w) / 2, work.top + (int(workH) - h) / 2,
@@ -197,20 +207,28 @@ void ShowError(HRESULT hr, const std::wstring& name) {
     MessageBoxW(g.hwnd, message.c_str(), kAppName, MB_OK | MB_ICONERROR);
 }
 
-// Shows a decoded image, replacing the current one.
-void SetImage(const Image& image, std::wstring name) {
+// Shows a decoded image, replacing the current one. bytes is the size of a pasted image's compressed data, if
+// known; a file's size is read from the file.
+void SetImage(const Image& image, std::wstring name, UINT64 bytes = 0) {
     SelectObject(g.imageDC, image.bitmap);
     if (g.image.bitmap) DeleteObject(g.image.bitmap);
     g.image = image;
     g.name = std::move(name);
     g.imageW = float(image.width);
     g.imageH = float(image.height);
+    g.resolution = std::to_wstring(image.width) + L" × " + std::to_wstring(image.height);
+    WIN32_FILE_ATTRIBUTE_DATA file;
+    if (!g.source.path.empty() && GetFileAttributesExW(g.source.path.c_str(), GetFileExInfoStandard, &file)) {
+        bytes = UINT64(file.nFileSizeHigh) << 32 | file.nFileSizeLow;
+    }
+    g.size = bytes ? FormatSize(bytes) : L"";
     g.zoom = FitZoom();
     g.fit = true;
-    g.shownPercent = -1;
     ClampOffset();
-    UpdateTitle();
+    SetWindowTextW(g.hwnd, g.name.c_str());
+    UpdateStatus();
     EnableImageCommands(true, !g.source.path.empty());
+    EnableStepButtons(!g.source.path.empty());
     InvalidateRect(g.hwnd, nullptr, FALSE);
 }
 
@@ -223,13 +241,16 @@ void CloseImage() {
     g.image = {};
     g.source = {};
     g.name.clear();
+    g.resolution.clear();
+    g.size.clear();
     g.imageW = g.imageH = 0;
     g.zoom = 1;
     g.fit = true;
-    g.shownPercent = -1;
     ClampOffset();
     SetWindowTextW(g.hwnd, kAppName);
+    UpdateStatus();
     EnableImageCommands(false, false);
+    EnableStepButtons(false);
     // Return the heap memory freed by decoding, so New leaves the process as it was at launch.
     HEAP_OPTIMIZE_RESOURCES_INFORMATION info{HEAP_OPTIMIZE_RESOURCES_CURRENT_VERSION, 0};
     HeapSetInformation(nullptr, HeapOptimizeResources, &info, sizeof(info));
@@ -250,7 +271,7 @@ std::thread ComThread(HRESULT& hr, Work work) {
 }
 
 // Decodes and shows an image, keeping the current one if that fails. Returns whether it is shown.
-bool Load(Source src, std::wstring name, bool showError = true) {
+bool Load(Source src, std::wstring name, bool showError = true, UINT64 bytes = 0) {
     Image image;
     HRESULT hr;
     ComThread(hr, [&] { return DecodeImage(src, image); }).join();
@@ -261,7 +282,7 @@ bool Load(Source src, std::wstring name, bool showError = true) {
     // A pasted copy is no longer needed once the bitmap holds every pixel of it.
     if (src.stream && image.exact) src = {.bitmap = image.bitmap};
     g.source = std::move(src);
-    SetImage(image, std::move(name));
+    SetImage(image, std::move(name), bytes);
     return true;
 }
 
@@ -358,7 +379,7 @@ void SaveAs() {
     }
 }
 
-// Switches between the normal window and a borderless one covering its monitor, without the menu bar.
+// Switches between the normal window and a borderless one covering its monitor, without the bars.
 void ToggleFullscreen() {
     g.fullscreen = !g.fullscreen;
     const LONG_PTR style = GetWindowLongPtrW(g.hwnd, GWL_STYLE);
@@ -367,15 +388,18 @@ void ToggleFullscreen() {
         GetWindowPlacement(g.hwnd, &g.placement);
         MONITORINFO mi{sizeof(mi)};
         GetMonitorInfoW(MonitorFromWindow(g.hwnd, MONITOR_DEFAULTTONEAREST), &mi);
-        g.barH = 0;
+        g.barH = g.statusH = 0;
         ShowWindow(g.bar, SW_HIDE);
+        ShowWindow(g.status, SW_HIDE);
         SetWindowLongPtrW(g.hwnd, GWL_STYLE, style & ~WS_OVERLAPPEDWINDOW);
         const RECT& r = mi.rcMonitor;
         SetWindowPos(g.hwnd, HWND_TOP, r.left, r.top, r.right - r.left, r.bottom - r.top,
                      SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
     } else {
         g.barH = MenuBarHeight();
+        g.statusH = StatusBarHeight();
         ShowWindow(g.bar, SW_SHOW);
+        ShowWindow(g.status, SW_SHOW);
         SetWindowLongPtrW(g.hwnd, GWL_STYLE, style | WS_OVERLAPPEDWINDOW);
         SetWindowPlacement(g.hwnd, &g.placement);
         SetWindowPos(g.hwnd, nullptr, 0, 0, 0, 0,
@@ -397,10 +421,11 @@ void Copy() {
 // Shows the clipboard image, or the first file copied in Explorer.
 void Paste() {
     Source src;
-    const HRESULT hr = ReadClipboardImage(g.hwnd, src);
+    UINT64 bytes;
+    const HRESULT hr = ReadClipboardImage(g.hwnd, src, bytes);
     std::wstring name = src.path.empty() ? L"Pasted image" : FileName(src.path);
     if (hr == S_OK) {
-        Load(std::move(src), std::move(name));
+        Load(std::move(src), std::move(name), true, bytes);
     } else if (FAILED(hr)) {
         ShowError(hr, name);
     } else {
@@ -428,10 +453,14 @@ void RunCommand(UINT cmd) {
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
-        case WM_CREATE:
-            g.bar = CreateMenuBar(hwnd, reinterpret_cast<const CREATESTRUCTW*>(lp)->hInstance);
+        case WM_CREATE: {
+            const HINSTANCE instance = reinterpret_cast<const CREATESTRUCTW*>(lp)->hInstance;
+            g.bar = CreateMenuBar(hwnd, instance);
             g.barH = MenuBarHeight();
-            return g.bar ? 0 : -1;
+            g.status = g.bar ? CreateStatusBar(hwnd, instance) : nullptr;
+            g.statusH = StatusBarHeight();
+            return g.status ? 0 : -1;
+        }
         case WM_PAINT: {
             const HRGN update = CreateRectRgn(0, 0, 0, 0);
             GetUpdateRgn(hwnd, update, FALSE);
@@ -448,7 +477,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 1;
         case WM_SIZE:
             MoveWindow(g.bar, 0, 0, LOWORD(lp), g.barH, TRUE);
-            OnSize(float(LOWORD(lp)), float(HIWORD(lp) - g.barH));
+            MoveWindow(g.status, 0, HIWORD(lp) - g.statusH, LOWORD(lp), g.statusH, TRUE);
+            OnSize(float(LOWORD(lp)), float(HIWORD(lp) - g.barH - g.statusH));
             return 0;
         case WM_MOUSEWHEEL: {  // also delivered for touchpad pinch
             POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
@@ -523,7 +553,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_DPICHANGED: {
             const RECT* r = reinterpret_cast<const RECT*>(lp);
             LayoutMenuBar(HIWORD(wp));
+            LayoutStatusBar(HIWORD(wp));  // after the menu bar, whose height it shares
             g.barH = g.fullscreen ? 0 : MenuBarHeight();
+            g.statusH = g.fullscreen ? 0 : StatusBarHeight();
             SetWindowPos(hwnd, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top,
                          SWP_NOZORDER | SWP_NOACTIVATE);
             return 0;
