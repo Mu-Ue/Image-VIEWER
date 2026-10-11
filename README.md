@@ -32,7 +32,6 @@ Output: `build\Image VIEWER.exe` (single file, no dependencies).
 | `0` / `1`                | Fit / 100%                |
 | `←` / `→`                | Previous / next image     |
 | `F11`                    | Fullscreen                |
-| `Ctrl+N`                 | New (close image)         |
 | `Ctrl+O`                 | Open                      |
 | `Ctrl+C`                 | Copy image                |
 | `Ctrl+V`                 | Paste image or image file |

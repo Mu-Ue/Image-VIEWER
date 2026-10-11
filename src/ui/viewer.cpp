@@ -33,7 +33,6 @@ struct Viewer {
     Image image;
     Animation animation;  // of an animated GIF, drawn into image.bitmap
     HDC imageDC = nullptr;  // memory DC holding image.bitmap
-    HGDIOBJ emptyBitmap = nullptr;  // imageDC's original bitmap, selected while no image is shown
     HBRUSH background = nullptr;
 
     float imageW = 0, imageH = 0;  // upright size in pixels
@@ -259,33 +258,6 @@ void SetImage(const Image& image, std::wstring name, UINT64 bytes = 0, Animation
     InvalidateRect(g.hwnd, nullptr, FALSE);
 }
 
-// Closes the current image, leaving the empty window.
-void CloseImage() {
-    if (!g.image.bitmap) return;
-    SelectObject(g.imageDC, g.emptyBitmap);
-    DeleteObject(g.image.bitmap);
-    StopScaleThreads();
-    KillTimer(g.hwnd, kAnimationTimer);
-    g.animation = {};
-    g.image = {};
-    g.source = {};
-    g.name.clear();
-    g.resolution.clear();
-    g.size.clear();
-    g.imageW = g.imageH = 0;
-    g.zoom = 1;
-    g.fit = true;
-    ClampOffset();
-    SetWindowTextW(g.hwnd, kAppName);
-    UpdateStatus();
-    EnableImageCommands(false, false);
-    EnableStepButtons(false);
-    // Return the heap memory freed by decoding, so New leaves the process as it was at launch.
-    HEAP_OPTIMIZE_RESOURCES_INFORMATION info{HEAP_OPTIMIZE_RESOURCES_CURRENT_VERSION, 0};
-    HeapSetInformation(nullptr, HeapOptimizeResources, &info, sizeof(info));
-    InvalidateRect(g.hwnd, nullptr, FALSE);
-}
-
 // Runs work on a new thread with its own COM apartment, setting hr to its result. The UI thread never
 // starts COM, so when the thread ends COM unloads WIC and its codecs instead of keeping them in memory.
 template <class Work>
@@ -458,7 +430,6 @@ void Paste() {
 void RunCommand(UINT cmd) {
     const float cx = g.clientW / 2, cy = g.clientH / 2;
     switch (cmd) {
-        case kCmdNew: CloseImage(); break;
         case kCmdOpen: Open(); break;
         case kCmdCopy: Copy(); break;
         case kCmdPaste: Paste(); break;
@@ -555,7 +526,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_KEYDOWN: {
             if (GetKeyState(VK_CONTROL) < 0) {
                 switch (wp) {
-                    case 'N': RunCommand(kCmdNew); break;
                     case 'O': RunCommand(kCmdOpen); break;
                     case 'S': RunCommand(kCmdSaveAs); break;
                     case 'C': RunCommand(kCmdCopy); break;
@@ -659,7 +629,6 @@ bool StartViewer(HINSTANCE instance, std::wstring path, int showCmd) {
 
     g.imageDC = CreateCompatibleDC(nullptr);
     if (!g.imageDC) return false;
-    g.emptyBitmap = GetCurrentObject(g.imageDC, OBJ_BITMAP);
     if (image.bitmap) SetImage(image, g.name, 0, std::move(animation));
 
     PlaceWindow();
