@@ -197,6 +197,11 @@ LRESULT CALLBACK BarProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_ERASEBKGND:
             return 1;
+        case WM_NCHITTEST: {  // let the space beside the buttons through to the parent, which drags the window
+            POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            ScreenToClient(hwnd, &pt);
+            return HitTest(MAKELPARAM(pt.x, pt.y)) < 0 ? HTTRANSPARENT : HTCLIENT;
+        }
         case WM_MOUSEMOVE: {
             const int hot = HitTest(lp);
             if (hot != bar.hot) {

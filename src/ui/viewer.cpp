@@ -475,6 +475,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_ERASEBKGND:
             return 1;
+        case WM_NCHITTEST: {  // the menu bar's empty space moves the window, like the title bar
+            const LRESULT hit = DefWindowProcW(hwnd, msg, wp, lp);
+            POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            ScreenToClient(hwnd, &pt);
+            return hit == HTCLIENT && pt.y < g.barH ? HTCAPTION : hit;
+        }
         case WM_SIZE:
             MoveWindow(g.bar, 0, 0, LOWORD(lp), g.barH, TRUE);
             MoveWindow(g.status, 0, HIWORD(lp) - g.statusH, LOWORD(lp), g.statusH, TRUE);
