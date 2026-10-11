@@ -2,9 +2,9 @@
 
 #include <algorithm>
 #include <atomic>
-#include <memory>
-#include <new>
 #include <utility>
+
+#include "platform/pages.h"
 
 namespace {
 
@@ -84,26 +84,32 @@ struct Job {
     UINT32* band;  // output rows [b0, b0 + n), relative to the image's top
     int b0, n;
     std::atomic<int> next;  // next chunk of the band to compute
-    std::atomic<bool> failed;
+    BYTE* scratch;  // one slot of slotBytes per thread computing the band
+    size_t slotBytes;
+    std::atomic<int> slot;  // next free slot
 };
+
+// Bytes of scratch one thread needs: running totals, two rows of column sums and, for palettized
+// images, a row expanded to BGR.
+size_t SlotBytes(UINT cols, UINT bpp, UINT x0, UINT x1) {
+    const size_t values = size_t(cols) * 3;
+    const size_t bytes = values * sizeof(UINT64) + values * 2 * sizeof(UINT32) + (bpp <= 8 ? size_t(x1 - x0) * 3 : 0);
+    return (bytes + 63) & ~size_t(63);
+}
 
 // Computes chunks of the current band until none are left.
 void RunChunks(Job& job) {
     const size_t values = size_t(job.cols) * 3;
-    const std::unique_ptr<UINT32[]> sums(new (std::nothrow) UINT32[values * 2]);
-    const std::unique_ptr<UINT64[]> acc(new (std::nothrow) UINT64[values]);
-    const std::unique_ptr<BYTE[]> expanded(job.bpp <= 8 ? new (std::nothrow) BYTE[size_t(job.x1 - job.x0) * 3]
-                                                        : nullptr);
-    if (!sums || !acc || (job.bpp <= 8 && !expanded)) {
-        job.failed = true;
-        return;
-    }
+    BYTE* const mine = job.scratch + size_t(job.slot++) * job.slotBytes;
+    UINT64* const acc = reinterpret_cast<UINT64*>(mine);
+    UINT32* const sums = reinterpret_cast<UINT32*>(acc + values);
+    BYTE* const expanded = reinterpret_cast<BYTE*>(sums + values * 2);
 
     // Source row sy's visible pixels as BGR: palettized rows are expanded first.
     const auto row = [&](UINT sy) -> const BYTE* {
         const BYTE* line = job.bits + sy * job.stride;
         if (job.bpp == 24) return line + size_t(job.x0) * 3;
-        BYTE* d = expanded.get();
+        BYTE* d = expanded;
         const UINT bpp = job.bpp, mask = (1u << bpp) - 1;
         for (UINT sx = job.x0; sx < job.x1; ++sx, d += 3) {
             const UINT bit = sx * bpp;
@@ -112,11 +118,11 @@ void RunChunks(Job& job) {
             d[1] = q.rgbGreen;
             d[2] = q.rgbRed;
         }
-        return expanded.get();
+        return expanded;
     };
 
     // The last source row of an output row is often the first of the next, so the latest sums are kept.
-    UINT32* cached = sums.get();
+    UINT32* cached = sums;
     UINT32* scratch = cached + values;
     UINT cachedY = UINT(-1);
     for (int i; (i = job.next++) * kChunk < job.n;) {
@@ -130,7 +136,7 @@ void RunChunks(Job& job) {
                 continue;
             }
             previous = s;
-            std::fill_n(acc.get(), values, UINT64(0));
+            std::fill_n(acc, values, UINT64(0));
             for (UINT sy = s.first; sy <= s.last; ++sy) {
                 const UINT64 w = sy == s.first ? s.firstWeight : sy == s.last ? s.lastWeight : job.height;
                 if (sy != cachedY) {
@@ -145,7 +151,7 @@ void RunChunks(Job& job) {
                     out[c] = out[c - 1];
                     continue;
                 }
-                const UINT64* a = acc.get() + size_t(c) * 3;
+                const UINT64* a = acc + size_t(c) * 3;
                 out[c] = Average(a[0], job.area, job.inverse) | Average(a[1], job.area, job.inverse) << 8 |
                          Average(a[2], job.area, job.inverse) << 16;
             }
@@ -179,24 +185,29 @@ bool DrawScaled(HDC dc, HDC imageDC, int x, int y, int width, int height, const 
     }
     const UINT cols = UINT(c1 - c0);
 
-    const std::unique_ptr<Span[]> spans(new (std::nothrow) Span[cols]);
-    const std::unique_ptr<UINT32[]> band(new (std::nothrow) UINT32[size_t(cols) * kBand]);
-    if (!spans || !band) return false;
+    // Each band is split across the thread pool, with this thread helping.
+    const int helpers = std::min(int(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)) - 1, (kBand - 1) / kChunk);
+    const UINT x0 = Cover(UINT(c0), srcW, UINT(width)).first, x1 = Cover(UINT(c1 - 1), srcW, UINT(width)).last + 1;
+    const size_t slotBytes = SlotBytes(cols, bpp, x0, x1);
+    const Pages<Span> spans = AllocPages<Span>(cols);
+    const Pages<UINT32> band = AllocPages<UINT32>(size_t(cols) * kBand);
+    const Pages<BYTE> scratch = AllocPages<BYTE>(slotBytes * (helpers + 1));
+    if (!spans || !band || !scratch) return false;
     for (UINT c = 0; c < cols; ++c) spans[c] = Cover(UINT(c0) + c, srcW, UINT(width));
 
     Job job{static_cast<const BYTE*>(ds.dsBm.bmBits), size_t(ds.dsBm.bmWidthBytes), bpp, colors, srcH,
-            UINT(width), UINT(height), spans.get(), cols, spans[0].first, spans[cols - 1].last + 1,
+            UINT(width), UINT(height), spans.get(), cols, x0, x1,
             UINT64(srcW) * srcH, 1.0 / double(UINT64(srcW) * srcH), band.get()};
-    job.failed = false;
+    job.scratch = scratch.get();
+    job.slotBytes = slotBytes;
 
-    // Each band is split across the thread pool, with this thread helping.
     const PTP_WORK work = CreateThreadpoolWork(Work, &job, nullptr);
-    const int helpers = int(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)) - 1;
     BITMAPINFOHEADER header{sizeof(header), LONG(cols), 0, 1, 32, BI_RGB};
-    for (int b0 = r0; b0 < r1 && !job.failed; b0 += kBand) {
+    for (int b0 = r0; b0 < r1; b0 += kBand) {
         job.b0 = b0;
         job.n = std::min(kBand, r1 - b0);
         job.next = 0;
+        job.slot = 0;  // every callback of the previous band has finished
         for (int i = std::min(helpers, (job.n - 1) / kChunk); work && i > 0; --i) SubmitThreadpoolWork(work);
         RunChunks(job);
         if (work) WaitForThreadpoolWorkCallbacks(work, FALSE);
@@ -205,5 +216,5 @@ bool DrawScaled(HDC dc, HDC imageDC, int x, int y, int width, int height, const 
                           reinterpret_cast<const BITMAPINFO*>(&header), DIB_RGB_COLORS);
     }
     if (work) CloseThreadpoolWork(work);
-    return !job.failed;
+    return true;
 }
