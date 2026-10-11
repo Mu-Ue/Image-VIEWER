@@ -154,6 +154,11 @@ bool DrawScaled(HDC dc, HDC imageDC, int x, int y, int width, int height, const 
     const int c0 = std::max(0, int(clip.left) - x), c1 = std::min(width, int(clip.right) - x);
     const int r0 = std::max(0, int(clip.top) - y), r1 = std::min(height, int(clip.bottom) - y);
     if (c1 <= c0 || r1 <= r0) return true;
+
+    // At 100% every pixel covers exactly one image pixel.
+    if (UINT(width) == srcW && UINT(height) == srcH) {
+        return BitBlt(dc, x + c0, y + r0, c1 - c0, r1 - r0, imageDC, c0, r0, SRCCOPY);
+    }
     const UINT cols = UINT(c1 - c0);
 
     const std::unique_ptr<Span[]> spans(new (std::nothrow) Span[cols]);
