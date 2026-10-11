@@ -210,7 +210,7 @@ void SetImage(const Image& image, std::wstring name) {
     g.shownPercent = -1;
     ClampOffset();
     UpdateTitle();
-    EnableImageCommands(true);
+    EnableImageCommands(true, !g.source.path.empty());
     InvalidateRect(g.hwnd, nullptr, FALSE);
 }
 
@@ -229,7 +229,7 @@ void CloseImage() {
     g.shownPercent = -1;
     ClampOffset();
     SetWindowTextW(g.hwnd, kAppName);
-    EnableImageCommands(false);
+    EnableImageCommands(false, false);
     // Return the heap memory freed by decoding, so New leaves the process as it was at launch.
     HEAP_OPTIMIZE_RESOURCES_INFORMATION info{HEAP_OPTIMIZE_RESOURCES_CURRENT_VERSION, 0};
     HeapSetInformation(nullptr, HeapOptimizeResources, &info, sizeof(info));
@@ -393,6 +393,23 @@ void Paste() {
     }
 }
 
+void RunCommand(UINT cmd) {
+    const float cx = g.clientW / 2, cy = g.clientH / 2;
+    switch (cmd) {
+        case kCmdNew: CloseImage(); break;
+        case kCmdOpen: Open(); break;
+        case kCmdPaste: Paste(); break;
+        case kCmdSaveAs: SaveAs(); break;
+        case kCmdZoomIn: ZoomAt(g.zoom * kZoomStep, cx, cy); break;
+        case kCmdZoomOut: ZoomAt(g.zoom / kZoomStep, cx, cy); break;
+        case kCmdFit: ZoomAt(FitZoom(), cx, cy); break;
+        case kCmdActualSize: ZoomAt(1.0f, cx, cy); break;
+        case kCmdPrevious: Step(-1); break;
+        case kCmdNext: Step(1); break;
+        case kCmdFullscreen: ToggleFullscreen(); break;
+    }
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_CREATE:
@@ -450,37 +467,32 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_COMMAND:
-            switch (LOWORD(wp)) {
-                case kCmdNew: CloseImage(); break;
-                case kCmdOpen: Open(); break;
-                case kCmdSaveAs: SaveAs(); break;
-            }
+            RunCommand(LOWORD(wp));
             return 0;
         case WM_SYSCHAR:
-            if (wp == 'f' || wp == 'F') {
-                ShowFileMenu(true);
+            if (wp == 'f' || wp == 'F' || wp == 'v' || wp == 'V') {
+                ShowMenu(wp == 'f' || wp == 'F' ? kMenuFile : kMenuView, true);
                 return 0;
             }
             break;
         case WM_KEYDOWN: {
             if (GetKeyState(VK_CONTROL) < 0) {
                 switch (wp) {
-                    case 'N': CloseImage(); break;
-                    case 'O': Open(); break;
-                    case 'S': SaveAs(); break;
-                    case 'V': Paste(); break;
+                    case 'N': RunCommand(kCmdNew); break;
+                    case 'O': RunCommand(kCmdOpen); break;
+                    case 'S': RunCommand(kCmdSaveAs); break;
+                    case 'V': RunCommand(kCmdPaste); break;
                 }
                 return 0;
             }
-            const float cx = g.clientW / 2, cy = g.clientH / 2;
             switch (wp) {
-                case VK_OEM_PLUS: case VK_ADD: ZoomAt(g.zoom * kZoomStep, cx, cy); break;
-                case VK_OEM_MINUS: case VK_SUBTRACT: ZoomAt(g.zoom / kZoomStep, cx, cy); break;
-                case '0': case VK_NUMPAD0: ZoomAt(FitZoom(), cx, cy); break;
-                case '1': case VK_NUMPAD1: ZoomAt(1.0f, cx, cy); break;
-                case VK_LEFT: Step(-1); break;
-                case VK_RIGHT: Step(1); break;
-                case VK_F11: ToggleFullscreen(); break;
+                case VK_OEM_PLUS: case VK_ADD: RunCommand(kCmdZoomIn); break;
+                case VK_OEM_MINUS: case VK_SUBTRACT: RunCommand(kCmdZoomOut); break;
+                case '0': case VK_NUMPAD0: RunCommand(kCmdFit); break;
+                case '1': case VK_NUMPAD1: RunCommand(kCmdActualSize); break;
+                case VK_LEFT: RunCommand(kCmdPrevious); break;
+                case VK_RIGHT: RunCommand(kCmdNext); break;
+                case VK_F11: RunCommand(kCmdFullscreen); break;
                 case VK_ESCAPE:
                     if (g.fullscreen) {
                         ToggleFullscreen();

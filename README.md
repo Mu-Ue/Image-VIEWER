@@ -33,6 +33,7 @@ Output: `build\Image VIEWER.exe` (single file, no dependencies).
 | `Ctrl+V`                 | Paste image               |
 | `Ctrl+S`                 | Save as PNG or JPEG       |
 | `Esc`                    | Exit fullscreen / close   |
+| `Alt+F` / `Alt+V`        | File / View menu          |
 
 ## Set as default viewer
 

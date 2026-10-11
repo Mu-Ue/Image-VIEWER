@@ -20,5 +20,6 @@ constexpr COLORREF kChrome = 0x202020;      // title bar and menu bar, Windows d
 constexpr COLORREF kChromeHover = 0x2D2D2D;
 constexpr COLORREF kChromePressed = 0x383838;
 constexpr COLORREF kChromeText = 0xE6E6E6;
+constexpr COLORREF kChromeTextDisabled = 0x6E6E6E;
 constexpr float kMaxZoom = 64.0f;
 constexpr float kZoomStep = 1.25f;
