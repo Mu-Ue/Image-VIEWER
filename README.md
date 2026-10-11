@@ -1,6 +1,10 @@
+<p align="center"><img src="docs/icon.png" width="128" alt="Image VIEWER icon"></p>
+
 # Image VIEWER
 
 A minimal, fast native image viewer for Windows (Win32 + WIC + GDI).
+
+![Image VIEWER showing its own icon](docs/screenshot.png)
 
 ## Build
 
