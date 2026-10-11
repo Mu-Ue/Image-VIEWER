@@ -49,3 +49,6 @@ HRESULT OpenSource(IWICImagingFactory* wic, const Source& src, UINT maxSize,
 
 // Decodes into the smallest exact DIB section. Needs COM initialized on the calling thread.
 HRESULT DecodeImage(const Source& src, Image& out);
+
+// Whether a file name ends in one of the image extensions this viewer opens.
+bool IsImageName(const wchar_t* name);

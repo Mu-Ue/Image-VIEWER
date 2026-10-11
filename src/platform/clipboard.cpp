@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <string>
+#include <string_view>
 
 namespace {
 
@@ -127,20 +129,85 @@ UINT PngFormat() {
     return format;
 }
 
+UINT HtmlFormat() {
+    static const UINT format = RegisterClipboardFormatW(L"HTML Format");
+    return format;
+}
+
+int HexDigit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+// The file name at the end of an image URL, or empty if it isn't a plain name with an image extension.
+std::wstring ImageNameOf(std::string_view url) {
+    url = url.substr(0, url.find_first_of("?#"));
+    url = url.substr(url.find_last_of('/') + 1);
+    std::string bytes;
+    for (size_t i = 0; i < url.size(); ++i) {
+        if (url[i] != '%') {
+            bytes += url[i];
+            continue;
+        }
+        const int hi = i + 2 < url.size() ? HexDigit(url[i + 1]) : -1, lo = hi >= 0 ? HexDigit(url[i + 2]) : -1;
+        if (lo < 0) return {};
+        bytes += char(hi << 4 | lo);
+        i += 2;
+    }
+    const int n = bytes.empty() || bytes.size() > 1024 ? 0
+                  : MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), int(bytes.size()), nullptr, 0);
+    if (n <= 0 || n > 255) return {};
+    std::wstring name(n, L'\0');
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), int(bytes.size()), name.data(), n);
+    // No path parts, control characters, or direction overrides that could make the name read differently.
+    for (const wchar_t c : name) {
+        if (c < 0x20 || c == 0x7F || wcschr(L"\\/:*?\"<>|", c) || c == 0x200E || c == 0x200F ||
+            (c >= 0x202A && c <= 0x202E) || (c >= 0x2066 && c <= 0x2069)) {
+            return {};
+        }
+    }
+    return name[0] != L'.' && IsImageName(name.c_str()) ? name : std::wstring();
+}
+
+// Sets name to the file name of the first <img src> in the clipboard's HTML, which browsers and Discord add
+// next to a copied image. The URL is only read as text: nothing is ever fetched or opened.
+void CopyHtmlImageName(std::wstring& name) {
+    const HGLOBAL data = GetClipboardData(HtmlFormat());
+    const char* p = data ? static_cast<const char*>(GlobalLock(data)) : nullptr;
+    if (!p) return;
+    const std::string_view html(p, std::min<SIZE_T>(GlobalSize(data), 64 << 10));
+    const size_t img = html.find("<img");
+    const std::string_view tag = img == html.npos ? "" : html.substr(img, html.find('>', img) - img);
+    const size_t src = tag.find(" src=");
+    if (src != tag.npos && src + 5 < tag.size() && (tag[src + 5] == '"' || tag[src + 5] == '\'')) {
+        const size_t start = src + 6, end = tag.find(tag[src + 5], start);
+        if (end != tag.npos) {
+            std::wstring found = ImageNameOf(tag.substr(start, end - start));
+            if (!found.empty()) name = std::move(found);
+        }
+    }
+    GlobalUnlock(data);
+}
+
 }  // namespace
 
-HRESULT ReadClipboardImage(HWND owner, Source& out, UINT64& pngBytes) {
+HRESULT ReadClipboardImage(HWND owner, Source& out, std::wstring& name, UINT64& pngBytes) {
     pngBytes = 0;
     if (!OpenClipboard(owner)) return HRESULT_FROM_WIN32(GetLastError());
     HRESULT hr = S_FALSE;
     if (IsClipboardFormatAvailable(PngFormat())) {
         hr = CopyImageData(PngFormat(), out.stream);
         if (hr == S_OK) pngBytes = GlobalSize(GetClipboardData(PngFormat()));
+        name = L"Pasted image.png";
     } else if (IsClipboardFormatAvailable(CF_DIB)) {
         hr = CopyImageData(CF_DIB, out.stream);
+        name = L"Pasted image.bmp";
     } else if (IsClipboardFormatAvailable(CF_HDROP)) {
         hr = CopyFirstFile(out.path);
     }
+    if (hr == S_OK && out.stream) CopyHtmlImageName(name);
     CloseClipboard();
     return hr;
 }

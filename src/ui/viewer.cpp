@@ -302,15 +302,6 @@ void Open() {
     Load({std::move(path)}, std::move(name));
 }
 
-bool IsImageName(const wchar_t* name) {
-    const wchar_t* dot = wcsrchr(name, L'.');
-    if (!dot) return false;
-    for (const wchar_t* ext : kExtensions) {
-        if (CompareStringOrdinal(dot, -1, ext, -1, TRUE) == CSTR_EQUAL) return true;
-    }
-    return false;
-}
-
 // File names are not case-sensitive.
 bool SamePath(std::wstring_view a, std::wstring_view b) {
     return CompareStringOrdinal(a.data(), int(a.size()), b.data(), int(b.size()), TRUE) == CSTR_EQUAL;
@@ -426,9 +417,10 @@ void Copy() {
 // Shows the clipboard image, or the first file copied in Explorer. Problems go to the status bar.
 void Paste() {
     Source src;
+    std::wstring name;
     UINT64 bytes;
-    HRESULT hr = ReadClipboardImage(g.hwnd, src, bytes);
-    std::wstring name = src.path.empty() ? L"Pasted image" : FileName(src.path);
+    HRESULT hr = ReadClipboardImage(g.hwnd, src, name, bytes);
+    if (!src.path.empty()) name = FileName(src.path);
     if (hr == S_OK) hr = Load(std::move(src), std::move(name), false, bytes);
     if (hr == S_FALSE) {
         ShowStatusMessage(L"Nothing to paste: the clipboard doesn't hold an image.");

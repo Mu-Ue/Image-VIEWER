@@ -500,3 +500,12 @@ HRESULT DecodeImage(const Source& src, Image& out) {
     out.exact = alpha == 255 && !scaled && Is8BitColor(format);
     return S_OK;
 }
+
+bool IsImageName(const wchar_t* name) {
+    const wchar_t* dot = wcsrchr(name, L'.');
+    if (!dot) return false;
+    for (const wchar_t* ext : kExtensions) {
+        if (CompareStringOrdinal(dot, -1, ext, -1, TRUE) == CSTR_EQUAL) return true;
+    }
+    return false;
+}
