@@ -15,6 +15,8 @@ namespace {
 struct Span {
     UINT first, last;  // inclusive
     UINT firstWeight, lastWeight;  // lastWeight is 0 when first == last
+
+    bool operator==(const Span&) const = default;
 };
 
 Span Cover(UINT i, UINT src, UINT out) {
@@ -28,9 +30,14 @@ Span Cover(UINT i, UINT src, UINT out) {
 }
 
 // Sums one source row (BGR, starting at source x0) into each column's weighted B, G, R totals.
+// When enlarging, neighboring columns often cover the same source pixel, so their sums are copied.
 void SumRow(const BYTE* p, UINT x0, const Span* cols, UINT count, UINT out, UINT32* sums) {
     for (UINT c = 0; c < count; ++c, sums += 3) {
         const Span& s = cols[c];
+        if (c && s == cols[c - 1]) {
+            std::copy_n(sums - 3, 3, sums);
+            continue;
+        }
         const BYTE* q = p + size_t(s.first - x0) * 3;
         UINT32 b = s.firstWeight * q[0], g = s.firstWeight * q[1], r = s.firstWeight * q[2];
         if (s.lastWeight) {
@@ -113,8 +120,16 @@ void RunChunks(Job& job) {
     UINT32* scratch = cached + values;
     UINT cachedY = UINT(-1);
     for (int i; (i = job.next++) * kChunk < job.n;) {
+        Span previous{};
         for (int r = i * kChunk, end = std::min(job.n, r + kChunk); r < end; ++r) {
             const Span s = Cover(UINT(job.b0 + r), job.srcH, job.height);
+            UINT32* out = job.band + size_t(r) * job.cols;
+            // When enlarging, neighboring rows often cover the same source rows and come out the same.
+            if (r != i * kChunk && s == previous) {
+                std::copy_n(out - job.cols, job.cols, out);
+                continue;
+            }
+            previous = s;
             std::fill_n(acc.get(), values, UINT64(0));
             for (UINT sy = s.first; sy <= s.last; ++sy) {
                 const UINT64 w = sy == s.first ? s.firstWeight : sy == s.last ? s.lastWeight : job.height;
@@ -125,8 +140,11 @@ void RunChunks(Job& job) {
                 }
                 for (size_t k = 0; k < values; ++k) acc[k] += w * cached[k];
             }
-            UINT32* out = job.band + size_t(r) * job.cols;
             for (UINT c = 0; c < job.cols; ++c) {
+                if (c && job.spans[c] == job.spans[c - 1]) {
+                    out[c] = out[c - 1];
+                    continue;
+                }
                 const UINT64* a = acc.get() + size_t(c) * 3;
                 out[c] = Average(a[0], job.area, job.inverse) | Average(a[1], job.area, job.inverse) << 8 |
                          Average(a[2], job.area, job.inverse) << 16;
