@@ -32,8 +32,7 @@ const GUID& ContainerFor(const std::wstring& path) {
         {L".jpe", GUID_ContainerFormatJpeg}, {L".jfif", GUID_ContainerFormatJpeg},
         {L".bmp", GUID_ContainerFormatBmp},  {L".dib", GUID_ContainerFormatBmp},
         {L".gif", GUID_ContainerFormatGif},  {L".tif", GUID_ContainerFormatTiff},
-        {L".tiff", GUID_ContainerFormatTiff}, {L".jxr", GUID_ContainerFormatWmp},
-        {L".wdp", GUID_ContainerFormatWmp},
+        {L".tiff", GUID_ContainerFormatTiff},
     };
     const size_t dot = path.find_last_of(L".\\/");
     if (dot != std::wstring::npos && path[dot] == L'.') {
@@ -44,8 +43,8 @@ const GUID& ContainerFor(const std::wstring& path) {
     return GUID_ContainerFormatPng;
 }
 
-// Writes the encoder options that keep the most quality: best-quality JPEG without chroma subsampling,
-// lossless JPEG XR, and BMP with alpha.
+// Writes the encoder options that keep the most quality: best-quality JPEG without chroma subsampling
+// and BMP with alpha.
 HRESULT WriteOptions(IPropertyBag2* options, const GUID& container) {
     PROPBAG2 names[2] = {};
     VARIANT values[2] = {};
@@ -58,11 +57,6 @@ HRESULT WriteOptions(IPropertyBag2* options, const GUID& container) {
         values[1].vt = VT_UI1;
         values[1].bVal = WICJpegYCrCbSubsampling444;
         count = 2;
-    } else if (container == GUID_ContainerFormatWmp) {
-        names[0].pstrName = const_cast<LPOLESTR>(L"Lossless");
-        values[0].vt = VT_BOOL;
-        values[0].boolVal = VARIANT_TRUE;
-        count = 1;
     } else if (container == GUID_ContainerFormatBmp) {
         names[0].pstrName = const_cast<LPOLESTR>(L"EnableV5Header32bppBGRA");
         values[0].vt = VT_BOOL;
