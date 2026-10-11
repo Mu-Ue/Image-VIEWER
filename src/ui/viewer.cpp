@@ -216,6 +216,7 @@ void CloseImage() {
     if (!g.image.bitmap) return;
     SelectObject(g.imageDC, g.emptyBitmap);
     DeleteObject(g.image.bitmap);
+    StopScaleThreads();
     g.image = {};
     g.source = {};
     g.name.clear();

@@ -161,6 +161,20 @@ void RunChunks(Job& job) {
 
 void CALLBACK Work(PTP_CALLBACK_INSTANCE, void* job, PTP_WORK) { RunChunks(*static_cast<Job*>(job)); }
 
+// The helpers' own pool: the process-wide one would keep its threads around after the image is closed.
+PTP_POOL pool;
+TP_CALLBACK_ENVIRON environment;
+
+// Starts the pool if needed, returning false if there is none.
+bool StartPool(int threads) {
+    if (pool) return true;
+    if (threads <= 0 || !(pool = CreateThreadpool(nullptr))) return false;
+    SetThreadpoolThreadMaximum(pool, DWORD(threads));
+    InitializeThreadpoolEnvironment(&environment);
+    SetThreadpoolCallbackPool(&environment, pool);
+    return true;
+}
+
 }  // namespace
 
 bool DrawScaled(HDC dc, HDC imageDC, int x, int y, int width, int height, const RECT& clip) {
@@ -201,7 +215,7 @@ bool DrawScaled(HDC dc, HDC imageDC, int x, int y, int width, int height, const 
     job.scratch = scratch.get();
     job.slotBytes = slotBytes;
 
-    const PTP_WORK work = CreateThreadpoolWork(Work, &job, nullptr);
+    const PTP_WORK work = StartPool(helpers) ? CreateThreadpoolWork(Work, &job, &environment) : nullptr;
     BITMAPINFOHEADER header{sizeof(header), LONG(cols), 0, 1, 32, BI_RGB};
     for (int b0 = r0; b0 < r1; b0 += kBand) {
         job.b0 = b0;
@@ -217,4 +231,11 @@ bool DrawScaled(HDC dc, HDC imageDC, int x, int y, int width, int height, const 
     }
     if (work) CloseThreadpoolWork(work);
     return true;
+}
+
+void StopScaleThreads() {
+    if (!pool) return;
+    DestroyThreadpoolEnvironment(&environment);
+    CloseThreadpool(pool);
+    pool = nullptr;
 }
