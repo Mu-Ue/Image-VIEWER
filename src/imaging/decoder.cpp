@@ -299,15 +299,7 @@ HRESULT OpenSource(IWICImagingFactory* wic, const Source& src, UINT maxSize, Com
     }
 
     ComPtr<IStream> stream = src.stream;
-    HRESULT hr = S_OK;
-    if (src.data) {
-        ComPtr<IWICStream> memory;
-        hr = wic->CreateStream(&memory);
-        if (SUCCEEDED(hr)) hr = memory->InitializeFromMemory(const_cast<BYTE*>(src.data), src.size);
-        if (SUCCEEDED(hr)) stream = memory;
-    } else if (!stream) {
-        hr = OpenFileStream(wic, src.path, stream);
-    }
+    HRESULT hr = stream ? S_OK : OpenFileStream(wic, src.path, stream);
     ComPtr<IWICBitmapDecoder> decoder;
     if (SUCCEEDED(hr)) hr = CreateDecoder(wic, stream.Get(), decoder);
     ComPtr<IWICBitmapFrameDecode> frame;

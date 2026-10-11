@@ -15,7 +15,6 @@ constexpr wchar_t kFileFilter[] =
 
 constexpr UINT kMaxBitmapSize = 16384;  // Caps the decoded bitmap at 1 GB.
 constexpr UINT64 kMaxSourcePixels = 1ull << 30;  // Bounds decode time for tiny files that claim huge sizes.
-constexpr DWORD kMaxReadAheadBytes = 64 << 20;  // Larger files next to the image are read only when shown.
 constexpr COLORREF kBackground = 0x000000;  // black
 constexpr COLORREF kChrome = 0x202020;      // title bar and menu bar, Windows dark gray
 constexpr COLORREF kChromeHover = 0x2D2D2D;
