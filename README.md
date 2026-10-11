@@ -30,7 +30,7 @@ Output: `build\Image VIEWER.exe` (single file, no dependencies).
 | `F11`                    | Fullscreen                |
 | `Ctrl+N`                 | New (close image)         |
 | `Ctrl+O`                 | Open                      |
-| `Ctrl+V`                 | Paste image               |
+| `Ctrl+V`                 | Paste image or image file |
 | `Ctrl+S`                 | Save as PNG or JPEG       |
 | `Esc`                    | Exit fullscreen / close   |
 | `Alt+F` / `Alt+V`        | File / View menu          |

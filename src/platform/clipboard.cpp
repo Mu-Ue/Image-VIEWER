@@ -1,5 +1,6 @@
 #include "platform/clipboard.h"
 
+#include <shlobj_core.h>
 #include <wincodec.h>
 
 #include <algorithm>
@@ -43,18 +44,12 @@ SIZE_T MeasureDib(const BYTE* data, SIZE_T size, UINT64& offset) {
     return total <= size ? SIZE_T(total) : 0;
 }
 
-}  // namespace
-
-HRESULT CopyClipboardImage(HWND owner, Microsoft::WRL::ComPtr<IStream>& out) {
-    static const UINT pngFormat = RegisterClipboardFormatW(L"PNG");
-    if (!OpenClipboard(owner)) return HRESULT_FROM_WIN32(GetLastError());
-    const bool png = IsClipboardFormatAvailable(pngFormat);
-    const HGLOBAL data = GetClipboardData(png ? pngFormat : CF_DIB);
+// Copies the open clipboard's image data into a stream: PNG if offered, else the DIB as a BMP file.
+HRESULT CopyImageData(UINT format, Microsoft::WRL::ComPtr<IStream>& out) {
+    const bool png = format != CF_DIB;
+    const HGLOBAL data = GetClipboardData(format);
     const BYTE* p = data ? static_cast<const BYTE*>(GlobalLock(data)) : nullptr;
-    if (!p) {
-        CloseClipboard();
-        return S_FALSE;
-    }
+    if (!p) return S_FALSE;
 
     SIZE_T size = GlobalSize(data);
     HRESULT hr = size > kMaxBytes ? WINCODEC_ERR_IMAGESIZEOUTOFRANGE : S_OK;
@@ -89,6 +84,52 @@ HRESULT CopyClipboardImage(HWND owner, Microsoft::WRL::ComPtr<IStream>& out) {
         if (FAILED(hr)) GlobalFree(copy);
     }
     GlobalUnlock(data);
+    return hr;
+}
+
+// Sets path to the first file of a file list copied in Explorer (CF_HDROP).
+HRESULT CopyFirstFile(std::wstring& path) {
+    const HGLOBAL data = GetClipboardData(CF_HDROP);
+    const BYTE* p = data ? static_cast<const BYTE*>(GlobalLock(data)) : nullptr;
+    if (!p) return S_FALSE;
+    const SIZE_T size = GlobalSize(data);
+    HRESULT hr = S_FALSE;
+    DROPFILES drop;
+    if (size >= sizeof(drop)) {
+        memcpy(&drop, p, sizeof(drop));
+        if (drop.fWide && drop.pFiles >= sizeof(drop) && drop.pFiles < size) {
+            // The name must end within the data and within the longest path Windows allows.
+            const SIZE_T count = std::min<SIZE_T>((size - drop.pFiles) / sizeof(wchar_t), 32768);
+            std::wstring name(count, L'\0');
+            memcpy(name.data(), p + drop.pFiles, count * sizeof(wchar_t));  // need not be aligned
+            name.resize(wcsnlen(name.c_str(), count));
+            if (!name.empty() && name.size() < count) {
+                path = std::move(name);
+                hr = S_OK;
+            }
+        }
+    }
+    GlobalUnlock(data);
+    return hr;
+}
+
+UINT PngFormat() {
+    static const UINT format = RegisterClipboardFormatW(L"PNG");
+    return format;
+}
+
+}  // namespace
+
+HRESULT ReadClipboardImage(HWND owner, Source& out) {
+    if (!OpenClipboard(owner)) return HRESULT_FROM_WIN32(GetLastError());
+    HRESULT hr = S_FALSE;
+    if (IsClipboardFormatAvailable(PngFormat())) {
+        hr = CopyImageData(PngFormat(), out.stream);
+    } else if (IsClipboardFormatAvailable(CF_DIB)) {
+        hr = CopyImageData(CF_DIB, out.stream);
+    } else if (IsClipboardFormatAvailable(CF_HDROP)) {
+        hr = CopyFirstFile(out.path);
+    }
     CloseClipboard();
     return hr;
 }

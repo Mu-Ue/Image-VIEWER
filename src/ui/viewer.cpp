@@ -383,13 +383,17 @@ void ToggleFullscreen() {
     }
 }
 
+// Shows the clipboard image, or the first file copied in Explorer.
 void Paste() {
     Source src;
-    const HRESULT hr = CopyClipboardImage(g.hwnd, src.stream);
+    const HRESULT hr = ReadClipboardImage(g.hwnd, src);
+    std::wstring name = src.path.empty() ? L"Pasted image" : FileName(src.path);
     if (hr == S_OK) {
-        Load(std::move(src), L"Pasted image");
+        Load(std::move(src), std::move(name));
     } else if (FAILED(hr)) {
-        ShowError(hr, L"Pasted image");
+        ShowError(hr, name);
+    } else {
+        MessageBoxW(g.hwnd, L"The clipboard doesn't hold an image.", kAppName, MB_OK | MB_ICONINFORMATION);
     }
 }
 

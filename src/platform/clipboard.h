@@ -1,9 +1,10 @@
 #pragma once
 
 #include <windows.h>
-#include <objidl.h>
-#include <wrl/client.h>
 
-// Copies the clipboard image into a stream: PNG if offered (lossless, keeps alpha), else the DIB
-// as a BMP file. Returns S_FALSE if the clipboard holds no image.
-HRESULT CopyClipboardImage(HWND owner, Microsoft::WRL::ComPtr<IStream>& out);
+#include "imaging/decoder.h"
+
+// Reads the clipboard image into out: a stream of PNG if offered (lossless, keeps alpha), else the DIB
+// as a BMP file, or else the path of the first file copied in Explorer. Returns S_FALSE if there is none.
+HRESULT ReadClipboardImage(HWND owner, Source& out);
+
