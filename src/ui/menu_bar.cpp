@@ -7,6 +7,7 @@
 #include <iterator>
 
 #include "config.h"
+#include "ui/draw.h"
 
 namespace {
 
@@ -97,20 +98,6 @@ const Menu* MenuOf(const Item* item) {
     return nullptr;
 }
 
-void FillRounded(HDC dc, const RECT& r, COLORREF color) {
-    SetDCBrushColor(dc, color);
-    SetDCPenColor(dc, color);
-    SelectObject(dc, GetStockObject(DC_BRUSH));
-    SelectObject(dc, GetStockObject(DC_PEN));
-    const int radius = bar.height / 4;
-    RoundRect(dc, r.left, r.top, r.right, r.bottom, radius, radius);
-}
-
-// ExtTextOut rather than DrawText, which would load the complex-script shaper (TextShaping.dll).
-void Text(HDC dc, int x, int y, const wchar_t* text) {
-    ExtTextOutW(dc, x, y, 0, nullptr, text, UINT(wcslen(text)), nullptr);
-}
-
 void Paint(HDC dc) {
     RECT client;
     GetClientRect(bar.hwnd, &client);
@@ -122,7 +109,9 @@ void Paint(HDC dc) {
     for (int i = 0; i < int(std::size(bar.menus)); ++i) {
         const Menu& m = bar.menus[i];
         const RECT& r = m.button;
-        if (i == bar.open || i == bar.hot) FillRounded(dc, r, i == bar.open ? kChromePressed : kChromeHover);
+        if (i == bar.open || i == bar.hot) {
+            FillRounded(dc, r, i == bar.open ? kChromePressed : kChromeHover, bar.height / 4);
+        }
         Text(dc, r.left + (r.right - r.left - m.text.cx) / 2, r.top + (r.bottom - r.top - m.text.cy) / 2, m.label);
     }
 }
@@ -141,7 +130,7 @@ void DrawItem(const DRAWITEMSTRUCT& d) {
         FillRect(dc, &line, HBRUSH(GetStockObject(DC_BRUSH)));
     } else {
         if (d.itemState & ODS_SELECTED) {
-            FillRounded(dc, {r.left + bar.inset, r.top, r.right - bar.inset, r.bottom}, kChromeHover);
+            FillRounded(dc, {r.left + bar.inset, r.top, r.right - bar.inset, r.bottom}, kChromeHover, bar.height / 4);
         }
         SelectObject(dc, bar.font);
         SetBkMode(dc, TRANSPARENT);
