@@ -2,6 +2,8 @@
 
 #include <windowsx.h>
 
+#include <span>
+
 #include "config.h"
 #include "ui/draw.h"
 #include "ui/menu_bar.h"
@@ -11,6 +13,7 @@ namespace {
 constexpr wchar_t kClassName[] = L"ImageVIEWERStatus";
 constexpr wchar_t kChevrons[2][2] = {L"\xE76B", L"\xE76C"};  // ChevronLeft, ChevronRight in Segoe MDL2 Assets
 constexpr UINT kButtonCmds[2] = {kCmdPrevious, kCmdNext};
+constexpr UINT kMessageMs = 4000;  // how long a message stays
 
 struct {
     HWND parent = nullptr;
@@ -19,6 +22,7 @@ struct {
     int height = 0, textH = 0, iconH = 0, pad = 0, gap = 0, buttonW = 0;
     RECT buttons[2]{};
     std::wstring fields[3] = {L"No file loaded"};  // resolution, size, zoom
+    std::wstring message;  // shown instead of the fields while set
     int hot = -1, pressed = -1;  // button indices, -1 for none
     bool enabled = false;
 } status;
@@ -32,10 +36,12 @@ void Paint(HDC dc) {
     SetTextColor(dc, kChromeText);
     const int y = (status.height - status.textH) / 2;
 
-    // Fields on the left, split by 1px lines a gap away from the text on each side.
+    // Fields on the left, split by 1px lines a gap away from the text on each side, or the message instead.
+    const std::span<const std::wstring> fields =
+        status.message.empty() ? std::span<const std::wstring>(status.fields) : std::span(&status.message, 1);
     int x = status.gap;
     bool first = true;
-    for (const std::wstring& field : status.fields) {
+    for (const std::wstring& field : fields) {
         if (field.empty()) continue;
         if (!first) {
             FillSolid(dc, {x, y, x + 1, y + status.textH}, kChromePressed);
@@ -125,6 +131,11 @@ LRESULT CALLBACK StatusProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             status.pressed = -1;
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
+        case WM_TIMER:
+            KillTimer(hwnd, wp);
+            status.message.clear();
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
@@ -196,6 +207,12 @@ void SetStatus(std::wstring resolution, std::wstring size, long percent) {
     status.fields[0] = std::move(resolution);
     status.fields[1] = std::move(size);
     status.fields[2] = std::move(zoom);
+    InvalidateRect(status.hwnd, nullptr, FALSE);
+}
+
+void ShowStatusMessage(std::wstring message) {
+    status.message = std::move(message);
+    SetTimer(status.hwnd, 1, kMessageMs, nullptr);  // restarts the wait if a message is already shown
     InvalidateRect(status.hwnd, nullptr, FALSE);
 }
 

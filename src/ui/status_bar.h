@@ -16,5 +16,8 @@ int StatusBarHeight();
 // Shows the image info on the left, leaving out empty fields. A negative percent means no image is loaded.
 void SetStatus(std::wstring resolution, std::wstring size, long percent);
 
+// Shows a message in place of the image info for a few seconds.
+void ShowStatusMessage(std::wstring message);
+
 // Enables the previous/next buttons, which need the image to be a file.
 void EnableStepButtons(bool enable);

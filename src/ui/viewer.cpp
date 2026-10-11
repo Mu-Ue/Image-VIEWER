@@ -193,17 +193,22 @@ void PlaceWindow() {
                  w, h, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
+// Why an image can't be opened, as a sentence, or empty if there is nothing more useful to say.
+std::wstring ErrorReason(HRESULT hr) {
+    if (hr == WINCODEC_ERR_UNKNOWNIMAGEFORMAT || hr == WINCODEC_ERR_BADIMAGE) return L"It isn't a supported image.";
+    if (hr == WINCODEC_ERR_IMAGESIZEOUTOFRANGE) return L"It's too large to open.";
+    if (hr == WINCODEC_ERR_COMPONENTNOTFOUND) {
+        return L"This format isn't supported. Codecs for HEIC/AVIF are available from the Microsoft Store.";
+    }
+    if (hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) || hr == HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND)) {
+        return L"The file doesn't exist.";
+    }
+    return {};
+}
+
 void ShowError(HRESULT hr, const std::wstring& name) {
     std::wstring message = L"Can't open \"" + name + L"\".";
-    if (hr == WINCODEC_ERR_UNKNOWNIMAGEFORMAT) {
-        message += L"\n\nIt isn't a supported image.";
-    } else if (hr == WINCODEC_ERR_IMAGESIZEOUTOFRANGE) {
-        message += L"\n\nIt's too large to open.";
-    } else if (hr == WINCODEC_ERR_COMPONENTNOTFOUND) {
-        message += L"\n\nThis format isn't supported. Codecs for HEIC/AVIF are available from the Microsoft Store.";
-    } else if (hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) || hr == HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND)) {
-        message += L"\n\nThe file doesn't exist.";
-    }
+    if (const std::wstring reason = ErrorReason(hr); !reason.empty()) message += L"\n\n" + reason;
     MessageBoxW(g.hwnd, message.c_str(), kAppName, MB_OK | MB_ICONERROR);
 }
 
@@ -270,20 +275,20 @@ std::thread ComThread(HRESULT& hr, Work work) {
     });
 }
 
-// Decodes and shows an image, keeping the current one if that fails. Returns whether it is shown.
-bool Load(Source src, std::wstring name, bool showError = true, UINT64 bytes = 0) {
+// Decodes and shows an image, keeping the current one if that fails.
+HRESULT Load(Source src, std::wstring name, bool showError = true, UINT64 bytes = 0) {
     Image image;
     HRESULT hr;
     ComThread(hr, [&] { return DecodeImage(src, image); }).join();
     if (FAILED(hr)) {
         if (showError) ShowError(hr, name);
-        return false;
+        return hr;
     }
     // A pasted copy is no longer needed once the bitmap holds every pixel of it.
     if (src.stream && image.exact) src = {.bitmap = image.bitmap};
     g.source = std::move(src);
     SetImage(image, std::move(name), bytes);
-    return true;
+    return S_OK;
 }
 
 std::wstring FileName(const std::wstring& path) {
@@ -362,7 +367,7 @@ void Step(int step) {
         if (to.empty() || SamePath(to, start) || to == first) return;  // nothing else, or every other file failed
         if (first.empty()) first = to;
         std::wstring name = FileName(to);
-        if (Load({to}, std::move(name), false)) return;
+        if (SUCCEEDED(Load({to}, std::move(name), false))) return;
         from = std::move(to);
     }
 }
@@ -418,18 +423,18 @@ void Copy() {
     }
 }
 
-// Shows the clipboard image, or the first file copied in Explorer.
+// Shows the clipboard image, or the first file copied in Explorer. Problems go to the status bar.
 void Paste() {
     Source src;
     UINT64 bytes;
-    const HRESULT hr = ReadClipboardImage(g.hwnd, src, bytes);
+    HRESULT hr = ReadClipboardImage(g.hwnd, src, bytes);
     std::wstring name = src.path.empty() ? L"Pasted image" : FileName(src.path);
-    if (hr == S_OK) {
-        Load(std::move(src), std::move(name), true, bytes);
+    if (hr == S_OK) hr = Load(std::move(src), std::move(name), false, bytes);
+    if (hr == S_FALSE) {
+        ShowStatusMessage(L"Nothing to paste: the clipboard doesn't hold an image.");
     } else if (FAILED(hr)) {
-        ShowError(hr, name);
-    } else {
-        MessageBoxW(g.hwnd, L"The clipboard doesn't hold an image.", kAppName, MB_OK | MB_ICONINFORMATION);
+        const std::wstring reason = ErrorReason(hr);
+        ShowStatusMessage(L"Can't paste. " + (reason.empty() ? L"It isn't a supported image." : reason));
     }
 }
 
