@@ -5,6 +5,7 @@
 #include <type_traits>
 
 #include "config.h"
+#include "imaging/animation.h"
 #include "platform/pages.h"
 
 using Microsoft::WRL::ComPtr;
@@ -266,6 +267,33 @@ HRESULT CreateDecoder(IWICImagingFactory* wic, IStream* stream, ComPtr<IWICBitma
     return hr;
 }
 
+HRESULT OpenDecoder(IWICImagingFactory* wic, const Source& src, ComPtr<IWICBitmapDecoder>& decoder) {
+    ComPtr<IStream> stream = src.stream;
+    HRESULT hr = stream ? S_OK : OpenFileStream(wic, src.path, stream);
+    if (SUCCEEDED(hr)) hr = CreateDecoder(wic, stream.Get(), decoder);
+    return hr;
+}
+
+// Reads an animated GIF and shows its first frame on a new 24bpp canvas. Fails for anything else.
+HRESULT DecodeAnimation(IWICImagingFactory* wic, IWICBitmapDecoder* decoder, Image& out, Animation& animation) {
+    GUID container;
+    HRESULT hr = decoder->GetContainerFormat(&container);
+    if (SUCCEEDED(hr) && container != GUID_ContainerFormatGif) hr = WINCODEC_ERR_UNSUPPORTEDOPERATION;
+    Animation a;
+    if (SUCCEEDED(hr)) hr = ReadAnimation(wic, decoder, a);
+    if (FAILED(hr)) return hr;
+    const HBITMAP bitmap = CreateDib(a.width, a.height, 24, nullptr, 0, a.bits);
+    if (!bitmap) return E_OUTOFMEMORY;
+    a.stride = (a.width * 3 + 3) & ~3u;
+    ShowFrame(a, 0);
+    out.bitmap = bitmap;
+    out.width = a.width;
+    out.height = a.height;
+    out.exact = false;  // the canvas changes as it plays
+    animation = std::move(a);
+    return S_OK;
+}
+
 }  // namespace
 
 WicFactory::WicFactory() {
@@ -286,24 +314,15 @@ WicFactory::~WicFactory() {
     if (module_) FreeLibrary(module_);
 }
 
-HRESULT OpenSource(IWICImagingFactory* wic, const Source& src, UINT maxSize, ComPtr<IWICBitmapSource>& source,
-                   UINT& width, UINT& height, bool* scaled, int* orientation) {
+namespace {
+
+// OpenSource for a source that isn't a bitmap, once its decoder is made.
+HRESULT OpenDecoded(IWICImagingFactory* wic, IWICBitmapDecoder* decoder, UINT maxSize,
+                    ComPtr<IWICBitmapSource>& source, UINT& width, UINT& height, bool* scaled, int* orientation) {
     if (scaled) *scaled = false;
     if (orientation) *orientation = 1;
-    if (src.bitmap) {
-        ComPtr<IWICBitmap> bitmap;
-        HRESULT hr = wic->CreateBitmapFromHBITMAP(src.bitmap, nullptr, WICBitmapIgnoreAlpha, &bitmap);
-        if (SUCCEEDED(hr)) hr = bitmap->GetSize(&width, &height);
-        if (SUCCEEDED(hr)) source = bitmap;
-        return hr;
-    }
-
-    ComPtr<IStream> stream = src.stream;
-    HRESULT hr = stream ? S_OK : OpenFileStream(wic, src.path, stream);
-    ComPtr<IWICBitmapDecoder> decoder;
-    if (SUCCEEDED(hr)) hr = CreateDecoder(wic, stream.Get(), decoder);
     ComPtr<IWICBitmapFrameDecode> frame;
-    if (SUCCEEDED(hr)) hr = GetFrame(wic, decoder.Get(), frame);
+    HRESULT hr = GetFrame(wic, decoder, frame);
     if (SUCCEEDED(hr)) hr = frame->GetSize(&width, &height);
     if (FAILED(hr)) return hr;
     if (width == 0 || height == 0) return WINCODEC_ERR_BADIMAGE;
@@ -350,15 +369,44 @@ HRESULT OpenSource(IWICImagingFactory* wic, const Source& src, UINT maxSize, Com
     return S_OK;
 }
 
-HRESULT DecodeImage(const Source& src, Image& out) {
+}  // namespace
+
+HRESULT OpenSource(IWICImagingFactory* wic, const Source& src, UINT maxSize, ComPtr<IWICBitmapSource>& source,
+                   UINT& width, UINT& height, bool* scaled, int* orientation) {
+    if (src.bitmap) {
+        if (scaled) *scaled = false;
+        if (orientation) *orientation = 1;
+        ComPtr<IWICBitmap> bitmap;
+        HRESULT hr = wic->CreateBitmapFromHBITMAP(src.bitmap, nullptr, WICBitmapIgnoreAlpha, &bitmap);
+        if (SUCCEEDED(hr)) hr = bitmap->GetSize(&width, &height);
+        if (SUCCEEDED(hr)) source = bitmap;
+        return hr;
+    }
+    ComPtr<IWICBitmapDecoder> decoder;
+    HRESULT hr = OpenDecoder(wic, src, decoder);
+    if (SUCCEEDED(hr)) hr = OpenDecoded(wic, decoder.Get(), maxSize, source, width, height, scaled, orientation);
+    return hr;
+}
+
+HRESULT DecodeImage(const Source& src, Image& out, Animation* animation) {
     const WicFactory wic;
     HRESULT hr = wic.hr;
+    if (FAILED(hr)) return hr;
     ComPtr<IWICBitmapSource> source;
     UINT width = 0, height = 0;  // of the source, before orientation is applied
     bool scaled = false;
     int orientation = 1;
-    if (SUCCEEDED(hr)) {
+    if (src.bitmap) {
         hr = OpenSource(wic.Get(), src, kMaxBitmapSize, source, width, height, &scaled, &orientation);
+    } else {
+        ComPtr<IWICBitmapDecoder> decoder;
+        hr = OpenDecoder(wic.Get(), src, decoder);
+        if (SUCCEEDED(hr) && animation && SUCCEEDED(DecodeAnimation(wic.Get(), decoder.Get(), out, *animation))) {
+            return S_OK;
+        }
+        if (SUCCEEDED(hr)) {
+            hr = OpenDecoded(wic.Get(), decoder.Get(), kMaxBitmapSize, source, width, height, &scaled, &orientation);
+        }
     }
     if (FAILED(hr)) return hr;
     WICPixelFormatGUID format{};

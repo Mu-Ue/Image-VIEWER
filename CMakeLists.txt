@@ -9,6 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)  # lets VS Code IntelliSense see the real 
 
 add_executable(ImageVIEWER WIN32
     src/main.cpp
+    src/imaging/animation.cpp
     src/imaging/decoder.cpp
     src/imaging/encoder.cpp
     src/platform/clipboard.cpp

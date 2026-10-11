@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "config.h"
+#include "imaging/animation.h"
 #include "imaging/decoder.h"
 #include "imaging/encoder.h"
 #include "platform/clipboard.h"
@@ -19,6 +20,8 @@
 
 namespace {
 
+constexpr UINT_PTR kAnimationTimer = 1;
+
 struct Viewer {
     HWND hwnd = nullptr;
     HWND bar = nullptr, status = nullptr;
@@ -28,6 +31,7 @@ struct Viewer {
     std::wstring resolution, size;  // shown in the status bar
 
     Image image;
+    Animation animation;  // of an animated GIF, drawn into image.bitmap
     HDC imageDC = nullptr;  // memory DC holding image.bitmap
     HGDIOBJ emptyBitmap = nullptr;  // imageDC's original bitmap, selected while no image is shown
     HBRUSH background = nullptr;
@@ -152,6 +156,18 @@ void Pan(float dx, float dy) {
     UpdateWindow(g.hwnd);
 }
 
+// Shows the next frame of an animated GIF, repainting only the image.
+void NextFrame() {
+    Animation& a = g.animation;
+    if (a.frames.empty()) return;
+    a.current = (a.current + 1) % a.frames.size();
+    GdiFlush();  // GDI may still be reading the canvas
+    SetTimer(g.hwnd, kAnimationTimer, ShowFrame(a, a.current), nullptr);
+    const LONG x = std::lround(g.offsetX), y = g.barH + std::lround(g.offsetY);
+    const RECT r{x, y, x + LONG(std::lround(g.imageW * g.zoom)), y + LONG(std::lround(g.imageH * g.zoom))};
+    InvalidateRect(g.hwnd, &r, FALSE);
+}
+
 void OnSize(float width, float height) {
     if (width <= 0 || height <= 0) return;  // minimized
     const float dx = (width - g.clientW) / 2, dy = (height - g.clientH) / 2;
@@ -214,10 +230,16 @@ void ShowError(HRESULT hr, const std::wstring& name) {
 
 // Shows a decoded image, replacing the current one. bytes is the size of a pasted image's compressed data, if
 // known; a file's size is read from the file.
-void SetImage(const Image& image, std::wstring name, UINT64 bytes = 0) {
+void SetImage(const Image& image, std::wstring name, UINT64 bytes = 0, Animation animation = {}) {
     SelectObject(g.imageDC, image.bitmap);
     if (g.image.bitmap) DeleteObject(g.image.bitmap);
     g.image = image;
+    g.animation = std::move(animation);
+    if (g.animation.frames.empty()) {
+        KillTimer(g.hwnd, kAnimationTimer);
+    } else {
+        SetTimer(g.hwnd, kAnimationTimer, g.animation.frames[0].delay, nullptr);
+    }
     g.name = std::move(name);
     g.imageW = float(image.width);
     g.imageH = float(image.height);
@@ -243,6 +265,8 @@ void CloseImage() {
     SelectObject(g.imageDC, g.emptyBitmap);
     DeleteObject(g.image.bitmap);
     StopScaleThreads();
+    KillTimer(g.hwnd, kAnimationTimer);
+    g.animation = {};
     g.image = {};
     g.source = {};
     g.name.clear();
@@ -278,8 +302,9 @@ std::thread ComThread(HRESULT& hr, Work work) {
 // Decodes and shows an image, keeping the current one if that fails.
 HRESULT Load(Source src, std::wstring name, bool showError = true, UINT64 bytes = 0) {
     Image image;
+    Animation animation;
     HRESULT hr;
-    ComThread(hr, [&] { return DecodeImage(src, image); }).join();
+    ComThread(hr, [&] { return DecodeImage(src, image, &animation); }).join();
     if (FAILED(hr)) {
         if (showError) ShowError(hr, name);
         return hr;
@@ -287,7 +312,7 @@ HRESULT Load(Source src, std::wstring name, bool showError = true, UINT64 bytes 
     // A pasted copy is no longer needed once the bitmap holds every pixel of it.
     if (src.stream && image.exact) src = {.bitmap = image.bitmap};
     g.source = std::move(src);
-    SetImage(image, std::move(name), bytes);
+    SetImage(image, std::move(name), bytes, std::move(animation));
     return S_OK;
 }
 
@@ -518,6 +543,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_COMMAND:
             RunCommand(LOWORD(wp));
             return 0;
+        case WM_TIMER:
+            if (wp == kAnimationTimer) NextFrame();
+            return 0;
         case WM_SYSCHAR:
             if (wp == 'f' || wp == 'F' || wp == 'v' || wp == 'V') {
                 ShowMenu(wp == 'f' || wp == 'F' ? kMenuFile : kMenuView, true);
@@ -614,9 +642,12 @@ bool StartViewer(HINSTANCE instance, std::wstring path, int showCmd) {
 
     // Decode on a worker thread while the window is set up.
     Image image;
+    Animation animation;
     HRESULT decodeHr = S_OK;
     std::thread decoder;
-    if (!g.source.path.empty()) decoder = ComThread(decodeHr, [&] { return DecodeImage(g.source, image); });
+    if (!g.source.path.empty()) {
+        decoder = ComThread(decodeHr, [&] { return DecodeImage(g.source, image, &animation); });
+    }
 
     g.hwnd = CreateMainWindow(instance);
     if (decoder.joinable()) decoder.join();
@@ -629,7 +660,7 @@ bool StartViewer(HINSTANCE instance, std::wstring path, int showCmd) {
     g.imageDC = CreateCompatibleDC(nullptr);
     if (!g.imageDC) return false;
     g.emptyBitmap = GetCurrentObject(g.imageDC, OBJ_BITMAP);
-    if (image.bitmap) SetImage(image, g.name);
+    if (image.bitmap) SetImage(image, g.name, 0, std::move(animation));
 
     PlaceWindow();
     ShowWindow(g.hwnd, showCmd);

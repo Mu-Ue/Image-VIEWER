@@ -47,8 +47,11 @@ HRESULT OpenSource(IWICImagingFactory* wic, const Source& src, UINT maxSize,
                    Microsoft::WRL::ComPtr<IWICBitmapSource>& source, UINT& width, UINT& height,
                    bool* scaled = nullptr, int* orientation = nullptr);
 
-// Decodes into the smallest exact DIB section. Needs COM initialized on the calling thread.
-HRESULT DecodeImage(const Source& src, Image& out);
+struct Animation;
+
+// Decodes into the smallest exact DIB section. Needs COM initialized on the calling thread. If animation is
+// given and the image is an animated GIF, it is read into animation and out is its canvas showing frame 0.
+HRESULT DecodeImage(const Source& src, Image& out, Animation* animation = nullptr);
 
 // Whether a file name ends in one of the image extensions this viewer opens.
 bool IsImageName(const wchar_t* name);
