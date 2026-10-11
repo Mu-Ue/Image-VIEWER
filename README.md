@@ -2,7 +2,7 @@
 
 # Image VIEWER
 
-A minimal, fast native image viewer for Windows (Win32 + WIC + GDI).
+A minimal, fast, highly optimized native image viewer for Windows (Win32 + WIC + GDI) with ~1 MB idle memory usage.
 
 ![Image VIEWER showing its own icon](docs/screenshot.png)
 
