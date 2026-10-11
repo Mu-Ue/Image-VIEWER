@@ -26,6 +26,7 @@ Output: `build\Image VIEWER.exe` (single file, no dependencies).
 | Double-click             | Toggle fit / 100%         |
 | `+` / `-`                | Zoom in / out             |
 | `0` / `1`                | Fit / 100%                |
+| `←` / `→`                | Previous / next image     |
 | `Ctrl+N`                 | New (close image)         |
 | `Ctrl+O`                 | Open                      |
 | `Ctrl+V`                 | Paste image               |

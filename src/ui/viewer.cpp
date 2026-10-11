@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string_view>
 #include <thread>
 
 #include "config.h"
@@ -246,26 +247,101 @@ std::thread ComThread(HRESULT& hr, Work work) {
     });
 }
 
-// Decodes and shows an image, keeping the current one if that fails.
-void Load(Source src, std::wstring name) {
+// Decodes and shows an image, keeping the current one if that fails. Returns whether it is shown.
+bool Load(Source src, std::wstring name, bool showError = true) {
     Image image;
     HRESULT hr;
     ComThread(hr, [&] { return DecodeImage(src, image); }).join();
     if (FAILED(hr)) {
-        ShowError(hr, name);
-        return;
+        if (showError) ShowError(hr, name);
+        return false;
     }
     // A pasted copy is no longer needed once the bitmap holds every pixel of it.
     if (src.stream && image.exact) src = {.bitmap = image.bitmap};
     g.source = std::move(src);
     SetImage(image, std::move(name));
+    return true;
+}
+
+std::wstring FileName(const std::wstring& path) {
+    return path.substr(path.find_last_of(L"\\/") + 1);
 }
 
 void Open() {
     std::wstring path = RunFileDialog(g.hwnd, L"open", {});
     if (path.empty()) return;
-    std::wstring name = path.substr(path.find_last_of(L"\\/") + 1);
+    std::wstring name = FileName(path);
     Load({std::move(path)}, std::move(name));
+}
+
+bool IsImageName(const wchar_t* name) {
+    const wchar_t* dot = wcsrchr(name, L'.');
+    if (!dot) return false;
+    for (const wchar_t* ext : kExtensions) {
+        if (CompareStringOrdinal(dot, -1, ext, -1, TRUE) == CSTR_EQUAL) return true;
+    }
+    return false;
+}
+
+// File names are not case-sensitive.
+bool SamePath(std::wstring_view a, std::wstring_view b) {
+    return CompareStringOrdinal(a.data(), int(a.size()), b.data(), int(b.size()), TRUE) == CSTR_EQUAL;
+}
+
+// Orders names like Explorer ("2" before "10"), breaking ties so no two names compare equal.
+int CompareNames(const wchar_t* a, const wchar_t* b) {
+    const int r = CompareStringEx(LOCALE_NAME_USER_DEFAULT, NORM_IGNORECASE | SORT_DIGITSASNUMBERS, a, -1, b, -1,
+                                  nullptr, nullptr, 0);
+    return r != CSTR_EQUAL ? r - CSTR_EQUAL : CompareStringOrdinal(a, -1, b, -1, FALSE) - CSTR_EQUAL;
+}
+
+// Sets around[0] and around[1] to the images before and after path in its folder, wrapping around at the ends.
+// Both are empty if the folder holds no other image. Lists the folder each time, so it is never out of date.
+void Neighbors(const std::wstring& path, std::wstring (&around)[2]) {
+    const size_t slash = path.find_last_of(L"\\/");
+    const std::wstring dir = slash == std::wstring::npos ? L"" : path.substr(0, slash + 1);
+    const wchar_t* name = path.c_str() + dir.size();
+    // Closest before and after, and the last and first for wrapping around.
+    std::wstring before, after, last, first;
+    WIN32_FIND_DATAW fd;
+    const HANDLE find = FindFirstFileExW((dir + L"*").c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch,
+                                         nullptr, FIND_FIRST_EX_LARGE_FETCH);
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            const wchar_t* f = fd.cFileName;
+            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || !IsImageName(f) || SamePath(f, name)) continue;
+            const int c = CompareNames(f, name);
+            if (c < 0) {
+                if (before.empty() || CompareNames(f, before.c_str()) > 0) before = f;
+                if (first.empty() || CompareNames(f, first.c_str()) < 0) first = f;
+            } else if (c > 0) {
+                if (after.empty() || CompareNames(f, after.c_str()) < 0) after = f;
+                if (last.empty() || CompareNames(f, last.c_str()) > 0) last = f;
+            }
+        } while (FindNextFileW(find, &fd));
+        FindClose(find);
+    }
+    if (before.empty()) before = last;
+    if (after.empty()) after = first;
+    around[0] = before.empty() ? L"" : dir + before;
+    around[1] = after.empty() ? L"" : dir + after;
+}
+
+// Shows the previous (step < 0) or next image in the folder, silently skipping files that can't be opened.
+void Step(int step) {
+    if (g.source.path.empty()) return;
+    const std::wstring start = g.source.path;
+    std::wstring from = start, first;
+    for (;;) {
+        std::wstring around[2];
+        Neighbors(from, around);
+        std::wstring& to = around[step > 0];
+        if (to.empty() || SamePath(to, start) || to == first) return;  // nothing else, or every other file failed
+        if (first.empty()) first = to;
+        std::wstring name = FileName(to);
+        if (Load({to}, std::move(name), false)) return;
+        from = std::move(to);
+    }
 }
 
 void SaveAs() {
@@ -375,6 +451,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 case VK_OEM_MINUS: case VK_SUBTRACT: ZoomAt(g.zoom / kZoomStep, cx, cy); break;
                 case '0': case VK_NUMPAD0: ZoomAt(FitZoom(), cx, cy); break;
                 case '1': case VK_NUMPAD1: ZoomAt(1.0f, cx, cy); break;
+                case VK_LEFT: Step(-1); break;
+                case VK_RIGHT: Step(1); break;
                 case VK_ESCAPE: DestroyWindow(hwnd); break;
             }
             return 0;
