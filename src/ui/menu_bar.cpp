@@ -23,6 +23,7 @@ struct Item {
 constexpr Item kFileItems[] = {
     {kCmdNew, L"New", 'N', L"Ctrl+N"},
     {kCmdOpen, L"Open…", 'O', L"Ctrl+O"},
+    {kCmdCopy, L"Copy", 'C', L"Ctrl+C"},
     {kCmdPaste, L"Paste", 'P', L"Ctrl+V"},
     {kCmdSaveAs, L"Save As…", 'A', L"Ctrl+S"},
 };

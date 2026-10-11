@@ -6,3 +6,7 @@
 
 // Re-reads src at full size and quality and encodes it as PNG, or JPEG for a .jpg/.jpeg path.
 HRESULT SaveImage(const Source& src, const std::wstring& path);
+
+// Re-reads src at full size and quality as PNG (every pixel and alpha) and as a 24bpp DIB for the clipboard.
+// Needs COM initialized on the calling thread.
+HRESULT EncodeClipboardImage(const Source& src, HGLOBAL& png, HGLOBAL& dib);

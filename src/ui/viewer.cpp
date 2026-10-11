@@ -383,6 +383,17 @@ void ToggleFullscreen() {
     }
 }
 
+// Puts the image on the clipboard at full quality, not the path of its file.
+void Copy() {
+    if (!g.image.bitmap) return;
+    HGLOBAL png = nullptr, dib = nullptr;
+    HRESULT hr;
+    ComThread(hr, [&] { return EncodeClipboardImage(g.source, png, dib); }).join();
+    if (FAILED(hr) || !SetClipboardImage(g.hwnd, png, dib)) {
+        MessageBoxW(g.hwnd, L"Can't copy the image.", kAppName, MB_OK | MB_ICONERROR);
+    }
+}
+
 // Shows the clipboard image, or the first file copied in Explorer.
 void Paste() {
     Source src;
@@ -402,6 +413,7 @@ void RunCommand(UINT cmd) {
     switch (cmd) {
         case kCmdNew: CloseImage(); break;
         case kCmdOpen: Open(); break;
+        case kCmdCopy: Copy(); break;
         case kCmdPaste: Paste(); break;
         case kCmdSaveAs: SaveAs(); break;
         case kCmdZoomIn: ZoomAt(g.zoom * kZoomStep, cx, cy); break;
@@ -485,6 +497,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     case 'N': RunCommand(kCmdNew); break;
                     case 'O': RunCommand(kCmdOpen); break;
                     case 'S': RunCommand(kCmdSaveAs); break;
+                    case 'C': RunCommand(kCmdCopy); break;
                     case 'V': RunCommand(kCmdPaste); break;
                 }
                 return 0;

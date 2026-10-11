@@ -133,3 +133,21 @@ HRESULT ReadClipboardImage(HWND owner, Source& out) {
     CloseClipboard();
     return hr;
 }
+
+bool SetClipboardImage(HWND owner, HGLOBAL png, HGLOBAL dib) {
+    bool done = false;
+    if (OpenClipboard(owner)) {
+        // PNG first: programs take the first format they understand, and it keeps every pixel and alpha.
+        if (EmptyClipboard() && SetClipboardData(PngFormat(), png)) {
+            png = nullptr;
+            if (SetClipboardData(CF_DIB, dib)) {
+                dib = nullptr;
+                done = true;
+            }
+        }
+        CloseClipboard();
+    }
+    if (png) GlobalFree(png);
+    if (dib) GlobalFree(dib);
+    return done;
+}

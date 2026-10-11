@@ -3,7 +3,7 @@
 #include <windows.h>
 
 enum Command : UINT {
-    kCmdNew = 1, kCmdOpen, kCmdPaste, kCmdSaveAs,
+    kCmdNew = 1, kCmdOpen, kCmdCopy, kCmdPaste, kCmdSaveAs,
     kCmdZoomIn, kCmdZoomOut, kCmdFit, kCmdActualSize, kCmdPrevious, kCmdNext, kCmdFullscreen,
 };
 
