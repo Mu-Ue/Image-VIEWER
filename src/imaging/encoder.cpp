@@ -1,5 +1,7 @@
 #include "imaging/encoder.h"
 
+#include <vector>
+
 using Microsoft::WRL::ComPtr;
 
 namespace {
@@ -20,29 +22,137 @@ std::wstring CreateTempFile(const std::wstring& path) {
     return {};
 }
 
-// Encodes source as PNG, or best-quality JPEG, keeping its pixel format (bit depth, alpha, palette) where
-// the encoder supports it.
-HRESULT Encode(IWICImagingFactory* wic, IWICBitmapSource* source, IStream* stream, bool jpeg) {
+// The container for path's extension, matching kSaveFilter; PNG for anything else.
+const GUID& ContainerFor(const std::wstring& path) {
+    static const struct {
+        const wchar_t* ext;
+        const GUID& container;
+    } kTypes[] = {
+        {L".jpg", GUID_ContainerFormatJpeg}, {L".jpeg", GUID_ContainerFormatJpeg},
+        {L".jpe", GUID_ContainerFormatJpeg}, {L".jfif", GUID_ContainerFormatJpeg},
+        {L".bmp", GUID_ContainerFormatBmp},  {L".dib", GUID_ContainerFormatBmp},
+        {L".gif", GUID_ContainerFormatGif},  {L".tif", GUID_ContainerFormatTiff},
+        {L".tiff", GUID_ContainerFormatTiff}, {L".jxr", GUID_ContainerFormatWmp},
+        {L".wdp", GUID_ContainerFormatWmp},
+    };
+    const size_t dot = path.find_last_of(L".\\/");
+    if (dot != std::wstring::npos && path[dot] == L'.') {
+        for (const auto& type : kTypes) {
+            if (CompareStringOrdinal(path.c_str() + dot, -1, type.ext, -1, TRUE) == CSTR_EQUAL) return type.container;
+        }
+    }
+    return GUID_ContainerFormatPng;
+}
+
+// Writes the encoder options that keep the most quality: best-quality JPEG without chroma subsampling,
+// lossless JPEG XR, and BMP with alpha.
+HRESULT WriteOptions(IPropertyBag2* options, const GUID& container) {
+    PROPBAG2 names[2] = {};
+    VARIANT values[2] = {};
+    ULONG count = 0;
+    if (container == GUID_ContainerFormatJpeg) {
+        names[0].pstrName = const_cast<LPOLESTR>(L"ImageQuality");
+        values[0].vt = VT_R4;
+        values[0].fltVal = 1.0f;
+        names[1].pstrName = const_cast<LPOLESTR>(L"JpegYCrCbSubsampling");
+        values[1].vt = VT_UI1;
+        values[1].bVal = WICJpegYCrCbSubsampling444;
+        count = 2;
+    } else if (container == GUID_ContainerFormatWmp) {
+        names[0].pstrName = const_cast<LPOLESTR>(L"Lossless");
+        values[0].vt = VT_BOOL;
+        values[0].boolVal = VARIANT_TRUE;
+        count = 1;
+    } else if (container == GUID_ContainerFormatBmp) {
+        names[0].pstrName = const_cast<LPOLESTR>(L"EnableV5Header32bppBGRA");
+        values[0].vt = VT_BOOL;
+        values[0].boolVal = VARIANT_TRUE;
+        count = 1;
+    }
+    return count ? options->Write(count, names, values) : S_OK;
+}
+
+// Whether pixels in format can be transparent.
+bool HasAlpha(IWICImagingFactory* wic, const WICPixelFormatGUID& format) {
+    ComPtr<IWICComponentInfo> info;
+    ComPtr<IWICPixelFormatInfo2> pixel;
+    BOOL alpha = FALSE;
+    return SUCCEEDED(wic->CreateComponentInfo(format, &info)) && SUCCEEDED(info.As(&pixel)) &&
+           SUCCEEDED(pixel->SupportsTransparency(&alpha)) && alpha;
+}
+
+// Maps source onto its best 256 colors for an 8bpp indexed frame (GIF). The converter matches colors only,
+// so with alpha it gets 255 colors, and pixels under half opacity become a transparent 256th.
+HRESULT ToIndexed(IWICImagingFactory* wic, IWICBitmapSource* source, bool alpha, IWICBitmapFrameEncode* frame,
+                  ComPtr<IWICBitmapSource>& out) {
+    ComPtr<IWICPalette> palette;
+    ComPtr<IWICFormatConverter> indexed;
+    HRESULT hr = wic->CreatePalette(&palette);
+    if (SUCCEEDED(hr)) hr = palette->InitializeFromBitmap(source, alpha ? 255 : 256, FALSE);
+    if (SUCCEEDED(hr)) hr = wic->CreateFormatConverter(&indexed);
+    if (SUCCEEDED(hr)) {
+        hr = indexed->Initialize(source, GUID_WICPixelFormat8bppIndexed, WICBitmapDitherTypeNone, palette.Get(),
+                                 0.0, WICBitmapPaletteTypeCustom);
+    }
+    if (FAILED(hr) || !alpha) {
+        if (SUCCEEDED(hr)) hr = frame->SetPalette(palette.Get());
+        out = indexed;
+        return hr;
+    }
+
+    UINT width = 0, height = 0;
+    hr = source->GetSize(&width, &height);
+    if (SUCCEEDED(hr) && width > UINT_MAX / 4) hr = WINCODEC_ERR_IMAGESIZEOUTOFRANGE;
+    WICColor colors[256];
+    UINT count = 0;
+    if (SUCCEEDED(hr)) hr = palette->GetColors(255, colors, &count);
+    if (SUCCEEDED(hr)) {
+        colors[count] = 0;
+        hr = palette->InitializeCustom(colors, count + 1);
+    }
+    ComPtr<IWICBitmap> bitmap;
+    ComPtr<IWICFormatConverter> bgra;
+    if (SUCCEEDED(hr)) hr = wic->CreateBitmapFromSource(indexed.Get(), WICBitmapCacheOnLoad, &bitmap);
+    if (SUCCEEDED(hr)) hr = wic->CreateFormatConverter(&bgra);
+    if (SUCCEEDED(hr)) {
+        hr = bgra->Initialize(source, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, nullptr, 0.0,
+                              WICBitmapPaletteTypeCustom);
+    }
+    ComPtr<IWICBitmapLock> lock;
+    UINT stride = 0, size = 0;
+    BYTE* data = nullptr;
+    if (SUCCEEDED(hr)) hr = bitmap->Lock(nullptr, WICBitmapLockWrite, &lock);
+    if (SUCCEEDED(hr)) hr = lock->GetStride(&stride);
+    if (SUCCEEDED(hr)) hr = lock->GetDataPointer(&size, &data);
+    std::vector<BYTE> row;
+    if (SUCCEEDED(hr)) row.resize(size_t(width) * 4);
+    for (UINT y = 0; y < height && SUCCEEDED(hr); ++y) {
+        const WICRect rect{0, INT(y), INT(width), 1};
+        hr = bgra->CopyPixels(&rect, UINT(row.size()), UINT(row.size()), row.data());
+        BYTE* const indices = data + size_t(y) * stride;
+        for (UINT x = 0; x < width; ++x) {
+            if (row[size_t(x) * 4 + 3] < 128) indices[x] = BYTE(count);
+        }
+    }
+    lock.Reset();
+    if (SUCCEEDED(hr)) hr = bitmap->SetPalette(palette.Get());
+    if (SUCCEEDED(hr)) hr = frame->SetPalette(palette.Get());
+    out = bitmap;
+    return hr;
+}
+
+// Encodes source into container, keeping its pixel format (bit depth, alpha, palette) where the encoder
+// supports it.
+HRESULT Encode(IWICImagingFactory* wic, IWICBitmapSource* source, IStream* stream, const GUID& container) {
     UINT width = 0, height = 0;
     HRESULT hr = source->GetSize(&width, &height);
     ComPtr<IWICBitmapEncoder> encoder;
     ComPtr<IWICBitmapFrameEncode> frame;
     ComPtr<IPropertyBag2> options;
-    const GUID& container = jpeg ? GUID_ContainerFormatJpeg : GUID_ContainerFormatPng;
     if (SUCCEEDED(hr)) hr = wic->CreateEncoder(container, nullptr, &encoder);
     if (SUCCEEDED(hr)) hr = encoder->Initialize(stream, WICBitmapEncoderNoCache);
     if (SUCCEEDED(hr)) hr = encoder->CreateNewFrame(&frame, &options);
-    if (SUCCEEDED(hr) && jpeg) {  // best quality, no chroma subsampling
-        PROPBAG2 names[2] = {};
-        names[0].pstrName = const_cast<LPOLESTR>(L"ImageQuality");
-        names[1].pstrName = const_cast<LPOLESTR>(L"JpegYCrCbSubsampling");
-        VARIANT values[2] = {};
-        values[0].vt = VT_R4;
-        values[0].fltVal = 1.0f;
-        values[1].vt = VT_UI1;
-        values[1].bVal = WICJpegYCrCbSubsampling444;
-        hr = options->Write(2, names, values);
-    }
+    if (SUCCEEDED(hr)) hr = WriteOptions(options.Get(), container);
     if (SUCCEEDED(hr)) hr = frame->Initialize(options.Get());
     if (SUCCEEDED(hr)) hr = frame->SetSize(width, height);
 
@@ -51,7 +161,9 @@ HRESULT Encode(IWICImagingFactory* wic, IWICBitmapSource* source, IStream* strea
     format = sourceFormat;
     if (SUCCEEDED(hr)) hr = frame->SetPixelFormat(&format);
     ComPtr<IWICBitmapSource> pixels = source;
-    if (SUCCEEDED(hr) && format != sourceFormat) {
+    if (SUCCEEDED(hr) && format == GUID_WICPixelFormat8bppIndexed && format != sourceFormat) {
+        hr = ToIndexed(wic, source, HasAlpha(wic, sourceFormat), frame.Get(), pixels);
+    } else if (SUCCEEDED(hr) && format != sourceFormat) {
         // Same as WICConvertBitmapSource, without linking windowscodecs.dll into every launch.
         ComPtr<IWICFormatConverter> converter;
         hr = wic->CreateFormatConverter(&converter);
@@ -114,10 +226,6 @@ HRESULT EncodeDib(IWICImagingFactory* wic, IWICBitmapSource* source, HGLOBAL& ou
 // Writes a temporary file first so a failure never leaves a partial file and the source itself can
 // be overwritten.
 HRESULT SaveImage(const Source& src, const std::wstring& path) {
-    const size_t dot = path.find_last_of(L".\\/");
-    const wchar_t* ext = dot != std::wstring::npos && path[dot] == L'.' ? path.c_str() + dot : L"";
-    const bool jpeg = CompareStringOrdinal(ext, -1, L".jpg", -1, TRUE) == CSTR_EQUAL ||
-                      CompareStringOrdinal(ext, -1, L".jpeg", -1, TRUE) == CSTR_EQUAL;
     const std::wstring temp = CreateTempFile(path);
     if (temp.empty()) return HRESULT_FROM_WIN32(GetLastError());
 
@@ -131,7 +239,7 @@ HRESULT SaveImage(const Source& src, const std::wstring& path) {
         ComPtr<IWICStream> stream;
         if (SUCCEEDED(hr)) hr = wic->CreateStream(&stream);
         if (SUCCEEDED(hr)) hr = stream->InitializeFromFilename(temp.c_str(), GENERIC_WRITE);
-        if (SUCCEEDED(hr)) hr = Encode(wic.Get(), source.Get(), stream.Get(), jpeg);
+        if (SUCCEEDED(hr)) hr = Encode(wic.Get(), source.Get(), stream.Get(), ContainerFor(path));
     }  // closes the temporary file
 
     if (SUCCEEDED(hr) && !MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
@@ -152,7 +260,7 @@ HRESULT EncodeClipboardImage(const Source& src, HGLOBAL& png, HGLOBAL& dib) {
     HGLOBAL encoded = nullptr;
     if (SUCCEEDED(hr)) hr = CreateStreamOnHGlobal(nullptr, FALSE, &stream);
     if (SUCCEEDED(hr)) hr = GetHGlobalFromStream(stream.Get(), &encoded);
-    if (SUCCEEDED(hr)) hr = Encode(wic.Get(), source.Get(), stream.Get(), false);
+    if (SUCCEEDED(hr)) hr = Encode(wic.Get(), source.Get(), stream.Get(), GUID_ContainerFormatPng);
     stream.Reset();
     if (SUCCEEDED(hr)) hr = EncodeDib(wic.Get(), source.Get(), dib);
     if (FAILED(hr)) {

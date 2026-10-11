@@ -390,7 +390,7 @@ void Step(int step) {
 
 void SaveAs() {
     if (!g.image.bitmap) return;
-    const std::wstring path = RunFileDialog(g.hwnd, L"save", g.name.substr(0, g.name.find_last_of(L'.')));
+    const std::wstring path = RunFileDialog(g.hwnd, L"save", g.name);
     if (path.empty()) return;
     HRESULT hr;
     ComThread(hr, [&] { return SaveImage(g.source, path); }).join();

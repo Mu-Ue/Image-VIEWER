@@ -10,6 +10,23 @@ namespace {
 
 constexpr DWORD kMaxPath = 32768;  // characters, including the terminating null
 
+// The 1-based kSaveFilter type whose patterns include name's extension, or 0.
+DWORD SaveFilterIndex(const wchar_t* name) {
+    const wchar_t* dot = wcsrchr(name, L'.');
+    if (!dot) return 0;
+    DWORD index = 1;
+    for (const wchar_t* p = kSaveFilter; *p; ++index) {
+        const wchar_t* patterns = p + wcslen(p) + 1;
+        for (const wchar_t* q = patterns; *q;) {
+            const size_t len = wcscspn(q, L";");
+            if (CompareStringOrdinal(dot, -1, q + 1, int(len - 1), TRUE) == CSTR_EQUAL) return index;
+            q += q[len] ? len + 1 : len;
+        }
+        p = patterns + wcslen(patterns) + 1;
+    }
+    return 0;
+}
+
 }  // namespace
 
 int DialogMain() {
@@ -28,7 +45,10 @@ int DialogMain() {
     ofn.lpstrFile = buffer;
     ofn.nMaxFile = ARRAYSIZE(buffer);
     if (save) {
-        ofn.lpstrFilter = L"PNG\0*.png\0JPEG\0*.jpg;*.jpeg\0";
+        // Start on the image's own type, or PNG for one Windows can't write; the dialog adds the extension.
+        ofn.lpstrFilter = kSaveFilter;
+        ofn.nFilterIndex = SaveFilterIndex(buffer);
+        if (wchar_t* dot = wcsrchr(buffer, L'.')) *dot = L'\0';
         ofn.lpstrDefExt = L"png";
         ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
     } else {
