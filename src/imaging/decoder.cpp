@@ -2,11 +2,10 @@
 
 #include <algorithm>
 #include <cstring>
-#include <memory>
-#include <new>
 #include <type_traits>
 
 #include "config.h"
+#include "platform/pages.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -380,8 +379,8 @@ HRESULT DecodeImage(const Source& src, Image& out) {
     const UINT outW = sideways ? height : width, outH = sideways ? width : height;
     const UINT stripStride = width * 4;
     const UINT rows = std::clamp((1u << 20) / stripStride, 1u, height);
-    const std::unique_ptr<BYTE[]> strip(new (std::nothrow) BYTE[size_t(stripStride) * rows]);
-    std::unique_ptr<BYTE[]> indices(new (std::nothrow) BYTE[size_t(width) * height]);
+    const Pages<BYTE> strip = AllocPages<BYTE>(size_t(stripStride) * rows);
+    Pages<BYTE> indices = AllocPages<BYTE>(size_t(width) * height);
     if (!strip) return E_OUTOFMEMORY;
 
     const UINT stride24 = (outW * 3 + 3) & ~3u;
