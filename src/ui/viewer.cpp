@@ -227,6 +227,9 @@ void CloseImage() {
     ClampOffset();
     SetWindowTextW(g.hwnd, kAppName);
     EnableImageCommands(false);
+    // Return the heap memory freed by decoding, so New leaves the process as it was at launch.
+    HEAP_OPTIMIZE_RESOURCES_INFORMATION info{HEAP_OPTIMIZE_RESOURCES_CURRENT_VERSION, 0};
+    HeapSetInformation(nullptr, HeapOptimizeResources, &info, sizeof(info));
     InvalidateRect(g.hwnd, nullptr, FALSE);
 }
 
