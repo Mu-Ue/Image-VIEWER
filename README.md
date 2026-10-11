@@ -27,11 +27,12 @@ Output: `build\Image VIEWER.exe` (single file, no dependencies).
 | `+` / `-`                | Zoom in / out             |
 | `0` / `1`                | Fit / 100%                |
 | `←` / `→`                | Previous / next image     |
+| `F11`                    | Fullscreen                |
 | `Ctrl+N`                 | New (close image)         |
 | `Ctrl+O`                 | Open                      |
 | `Ctrl+V`                 | Paste image               |
 | `Ctrl+S`                 | Save as PNG or JPEG       |
-| `Esc`                    | Close                     |
+| `Esc`                    | Exit fullscreen / close   |
 
 ## Set as default viewer
 

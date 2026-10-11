@@ -47,6 +47,8 @@ struct Viewer {
     bool dragging = false;
     POINT dragFrom{};
     long shownPercent = -1;
+    bool fullscreen = false;
+    WINDOWPLACEMENT placement{sizeof(WINDOWPLACEMENT)};  // of the window before it went fullscreen
 
     // The images before and after the current one in its folder, read by prefetcher. Only touched by the
     // UI thread while prefetcher is not running.
@@ -451,6 +453,31 @@ void SaveAs() {
     }
 }
 
+// Switches between the normal window and a borderless one covering its monitor, without the menu bar.
+void ToggleFullscreen() {
+    g.fullscreen = !g.fullscreen;
+    const LONG_PTR style = GetWindowLongPtrW(g.hwnd, GWL_STYLE);
+    // The bar height changes first, so the resize lays out the image area for it.
+    if (g.fullscreen) {
+        GetWindowPlacement(g.hwnd, &g.placement);
+        MONITORINFO mi{sizeof(mi)};
+        GetMonitorInfoW(MonitorFromWindow(g.hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+        g.barH = 0;
+        ShowWindow(g.bar, SW_HIDE);
+        SetWindowLongPtrW(g.hwnd, GWL_STYLE, style & ~WS_OVERLAPPEDWINDOW);
+        const RECT& r = mi.rcMonitor;
+        SetWindowPos(g.hwnd, HWND_TOP, r.left, r.top, r.right - r.left, r.bottom - r.top,
+                     SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
+    } else {
+        g.barH = MenuBarHeight();
+        ShowWindow(g.bar, SW_SHOW);
+        SetWindowLongPtrW(g.hwnd, GWL_STYLE, style | WS_OVERLAPPEDWINDOW);
+        SetWindowPlacement(g.hwnd, &g.placement);
+        SetWindowPos(g.hwnd, nullptr, 0, 0, 0, 0,
+                     SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER);
+    }
+}
+
 void Paste() {
     Source src;
     const HRESULT hr = CopyClipboardImage(g.hwnd, src.stream);
@@ -548,14 +575,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 case '1': case VK_NUMPAD1: ZoomAt(1.0f, cx, cy); break;
                 case VK_LEFT: Step(-1); break;
                 case VK_RIGHT: Step(1); break;
-                case VK_ESCAPE: DestroyWindow(hwnd); break;
+                case VK_F11: ToggleFullscreen(); break;
+                case VK_ESCAPE:
+                    if (g.fullscreen) {
+                        ToggleFullscreen();
+                    } else {
+                        DestroyWindow(hwnd);
+                    }
+                    break;
             }
             return 0;
         }
         case WM_DPICHANGED: {
             const RECT* r = reinterpret_cast<const RECT*>(lp);
             LayoutMenuBar(HIWORD(wp));
-            g.barH = MenuBarHeight();
+            g.barH = g.fullscreen ? 0 : MenuBarHeight();
             SetWindowPos(hwnd, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top,
                          SWP_NOZORDER | SWP_NOACTIVATE);
             return 0;
