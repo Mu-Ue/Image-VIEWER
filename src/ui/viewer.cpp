@@ -4,6 +4,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <string_view>
 #include <thread>
@@ -13,10 +14,19 @@
 #include "imaging/encoder.h"
 #include "platform/clipboard.h"
 #include "platform/file_dialog.h"
+#include "platform/pages.h"
 #include "ui/menu_bar.h"
 #include "ui/scale.h"
 
 namespace {
+
+// The bytes of a file read ahead, and its size and write time when they were read.
+struct Cached {
+    std::wstring path;
+    Pages<BYTE> data;
+    DWORD size = 0;
+    FILETIME written{};
+};
 
 struct Viewer {
     HWND hwnd = nullptr;
@@ -37,6 +47,12 @@ struct Viewer {
     bool dragging = false;
     POINT dragFrom{};
     long shownPercent = -1;
+
+    // The images before and after the current one in its folder, read by prefetcher. Only touched by the
+    // UI thread while prefetcher is not running.
+    Cached cache[2];
+    std::thread prefetcher;
+    std::atomic<bool> stopPrefetch = false;
 } g;
 
 // Draws the image area where update (in image area coordinates) needs it.
@@ -212,66 +228,8 @@ void SetImage(const Image& image, std::wstring name) {
     InvalidateRect(g.hwnd, nullptr, FALSE);
 }
 
-// Closes the current image, leaving the empty window.
-void CloseImage() {
-    if (!g.image.bitmap) return;
-    SelectObject(g.imageDC, g.emptyBitmap);
-    DeleteObject(g.image.bitmap);
-    StopScaleThreads();
-    g.image = {};
-    g.source = {};
-    g.name.clear();
-    g.imageW = g.imageH = 0;
-    g.zoom = 1;
-    g.fit = true;
-    g.shownPercent = -1;
-    ClampOffset();
-    SetWindowTextW(g.hwnd, kAppName);
-    EnableImageCommands(false);
-    // Return the heap memory freed by decoding, so New leaves the process as it was at launch.
-    HEAP_OPTIMIZE_RESOURCES_INFORMATION info{HEAP_OPTIMIZE_RESOURCES_CURRENT_VERSION, 0};
-    HeapSetInformation(nullptr, HeapOptimizeResources, &info, sizeof(info));
-    InvalidateRect(g.hwnd, nullptr, FALSE);
-}
-
-// Runs work on a new thread with its own COM apartment, setting hr to its result. The UI thread never
-// starts COM, so when the thread ends COM unloads WIC and its codecs instead of keeping them in memory.
-template <class Work>
-std::thread ComThread(HRESULT& hr, Work work) {
-    return std::thread([&hr, work] {
-        hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-        if (SUCCEEDED(hr)) {
-            hr = work();
-            CoUninitialize();
-        }
-    });
-}
-
-// Decodes and shows an image, keeping the current one if that fails. Returns whether it is shown.
-bool Load(Source src, std::wstring name, bool showError = true) {
-    Image image;
-    HRESULT hr;
-    ComThread(hr, [&] { return DecodeImage(src, image); }).join();
-    if (FAILED(hr)) {
-        if (showError) ShowError(hr, name);
-        return false;
-    }
-    // A pasted copy is no longer needed once the bitmap holds every pixel of it.
-    if (src.stream && image.exact) src = {.bitmap = image.bitmap};
-    g.source = std::move(src);
-    SetImage(image, std::move(name));
-    return true;
-}
-
 std::wstring FileName(const std::wstring& path) {
     return path.substr(path.find_last_of(L"\\/") + 1);
-}
-
-void Open() {
-    std::wstring path = RunFileDialog(g.hwnd, L"open", {});
-    if (path.empty()) return;
-    std::wstring name = FileName(path);
-    Load({std::move(path)}, std::move(name));
 }
 
 bool IsImageName(const wchar_t* name) {
@@ -327,21 +285,158 @@ void Neighbors(const std::wstring& path, std::wstring (&around)[2]) {
     around[1] = after.empty() ? L"" : dir + after;
 }
 
+// Whether the file still has the size and write time it had when it was read ahead.
+bool Unchanged(const Cached& c) {
+    WIN32_FILE_ATTRIBUTE_DATA info;
+    return GetFileAttributesExW(c.path.c_str(), GetFileExInfoStandard, &info) && info.nFileSizeHigh == 0 &&
+           info.nFileSizeLow == c.size && CompareFileTime(&info.ftLastWriteTime, &c.written) == 0;
+}
+
+// The bytes of path if they were read ahead and the file hasn't changed since.
+const Cached* FindCached(const std::wstring& path) {
+    for (const Cached& c : g.cache) {
+        if (c.data && c.path == path && Unchanged(c)) return &c;
+    }
+    return nullptr;
+}
+
+// Reads a regular file of at most kMaxReadAheadBytes into out, unless the prefetch is stopped first.
+void ReadAhead(const std::wstring& path, Cached& out) {
+    const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
+                                    OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return;
+    BY_HANDLE_FILE_INFORMATION info;
+    if (GetFileType(file) == FILE_TYPE_DISK && GetFileInformationByHandle(file, &info) && info.nFileSizeHigh == 0 &&
+        info.nFileSizeLow > 0 && info.nFileSizeLow <= kMaxReadAheadBytes) {
+        const DWORD size = info.nFileSizeLow;
+        Pages<BYTE> data = AllocPages<BYTE>(size);
+        DWORD done = 0, read = 1;
+        // In chunks, so stopping never waits for a whole file.
+        while (data && done < size && read && !g.stopPrefetch) {
+            if (!ReadFile(file, data.get() + done, std::min(size - done, DWORD(1) << 20), &read, nullptr)) break;
+            done += read;
+        }
+        if (done == size) out = {path, std::move(data), size, info.ftLastWriteTime};
+    }
+    CloseHandle(file);
+}
+
+void StopPrefetch() {
+    if (!g.prefetcher.joinable()) return;
+    g.stopPrefetch = true;
+    g.prefetcher.join();
+    g.stopPrefetch = false;
+}
+
+// Reads the images before and after the current one in the background, keeping those already read.
+void Prefetch() {
+    StopPrefetch();
+    if (g.source.path.empty()) {
+        for (Cached& c : g.cache) c = {};
+        return;
+    }
+    g.prefetcher = std::thread([path = g.source.path] {
+        std::wstring around[2];
+        Neighbors(path, around);
+        if (around[1] == around[0]) around[1].clear();  // the only other image
+        Cached kept[2];
+        for (int i = 0; i < 2; ++i) {
+            for (Cached& c : g.cache) {
+                if (c.data && c.path == around[i] && Unchanged(c)) kept[i] = std::move(c);
+            }
+        }
+        for (int i = 0; i < 2; ++i) g.cache[i] = std::move(kept[i]);  // frees what is no longer next to it
+        for (int i = 0; i < 2; ++i) {
+            if (!g.cache[i].data && !around[i].empty()) ReadAhead(around[i], g.cache[i]);
+        }
+    });
+}
+
+// Closes the current image, leaving the empty window.
+void CloseImage() {
+    if (!g.image.bitmap) return;
+    SelectObject(g.imageDC, g.emptyBitmap);
+    DeleteObject(g.image.bitmap);
+    StopScaleThreads();
+    StopPrefetch();
+    for (Cached& c : g.cache) c = {};
+    g.image = {};
+    g.source = {};
+    g.name.clear();
+    g.imageW = g.imageH = 0;
+    g.zoom = 1;
+    g.fit = true;
+    g.shownPercent = -1;
+    ClampOffset();
+    SetWindowTextW(g.hwnd, kAppName);
+    EnableImageCommands(false);
+    // Return the heap memory freed by decoding, so New leaves the process as it was at launch.
+    HEAP_OPTIMIZE_RESOURCES_INFORMATION info{HEAP_OPTIMIZE_RESOURCES_CURRENT_VERSION, 0};
+    HeapSetInformation(nullptr, HeapOptimizeResources, &info, sizeof(info));
+    InvalidateRect(g.hwnd, nullptr, FALSE);
+}
+
+// Runs work on a new thread with its own COM apartment, setting hr to its result. The UI thread never
+// starts COM, so when the thread ends COM unloads WIC and its codecs instead of keeping them in memory.
+template <class Work>
+std::thread ComThread(HRESULT& hr, Work work) {
+    return std::thread([&hr, work] {
+        hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        if (SUCCEEDED(hr)) {
+            hr = work();
+            CoUninitialize();
+        }
+    });
+}
+
+// Decodes and shows an image, keeping the current one if that fails. Returns whether it is shown.
+bool Load(Source src, std::wstring name, bool showError = true) {
+    Image image;
+    HRESULT hr;
+    ComThread(hr, [&] { return DecodeImage(src, image); }).join();
+    if (FAILED(hr)) {
+        if (showError) ShowError(hr, name);
+        return false;
+    }
+    // A pasted copy is no longer needed once the bitmap holds every pixel of it.
+    if (src.stream && image.exact) src = {.bitmap = image.bitmap};
+    // Read-ahead bytes are freed as the image changes, so Save As reads the file again.
+    src.data = nullptr;
+    src.size = 0;
+    g.source = std::move(src);
+    SetImage(image, std::move(name));
+    Prefetch();
+    return true;
+}
+
+void Open() {
+    std::wstring path = RunFileDialog(g.hwnd, L"open", {});
+    if (path.empty()) return;
+    std::wstring name = FileName(path);
+    Load({std::move(path)}, std::move(name));
+}
+
 // Shows the previous (step < 0) or next image in the folder, silently skipping files that can't be opened.
 void Step(int step) {
     if (g.source.path.empty()) return;
+    StopPrefetch();
     const std::wstring start = g.source.path;
     std::wstring from = start, first;
     for (;;) {
         std::wstring around[2];
         Neighbors(from, around);
         std::wstring& to = around[step > 0];
-        if (to.empty() || SamePath(to, start) || to == first) return;  // nothing else, or every other file failed
+        if (to.empty() || SamePath(to, start) || to == first) break;  // nothing else, or every other file failed
         if (first.empty()) first = to;
-        std::wstring name = FileName(to);
-        if (Load({to}, std::move(name), false)) return;
+        Source src{to};
+        if (const Cached* c = FindCached(to)) {
+            src.data = c->data.get();
+            src.size = c->size;
+        }
+        if (Load(std::move(src), FileName(to), false)) return;
         from = std::move(to);
     }
+    Prefetch();  // resume reading ahead for the image still shown
 }
 
 void SaveAs() {
@@ -466,6 +561,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_DESTROY:
+            StopPrefetch();
             PostQuitMessage(0);
             return 0;
     }
@@ -531,7 +627,10 @@ bool StartViewer(HINSTANCE instance, std::wstring path, int showCmd) {
     g.imageDC = CreateCompatibleDC(nullptr);
     if (!g.imageDC) return false;
     g.emptyBitmap = GetCurrentObject(g.imageDC, OBJ_BITMAP);
-    if (image.bitmap) SetImage(image, g.name);
+    if (image.bitmap) {
+        SetImage(image, g.name);
+        Prefetch();
+    }
 
     PlaceWindow();
     ShowWindow(g.hwnd, showCmd);

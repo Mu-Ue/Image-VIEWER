@@ -6,11 +6,13 @@
 
 #include <string>
 
-// Where an image comes from: a file, an in-memory copy of pasted data, or a decoded bitmap that holds
-// the exact source pixels (not owned).
+// Where an image comes from: a file, an in-memory copy of pasted data, the bytes of a file read ahead
+// (not owned), or a decoded bitmap that holds the exact source pixels (not owned).
 struct Source {
     std::wstring path;
     Microsoft::WRL::ComPtr<IStream> stream;
+    const BYTE* data = nullptr;
+    DWORD size = 0;
     HBITMAP bitmap = nullptr;
 };
 
