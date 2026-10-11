@@ -517,8 +517,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_TIMER:
             if (wp == kAnimationTimer) NextFrame();
             return 0;
-        case WM_SYSCOMMAND:  // no system menu: Alt+Space and clicking the title bar icon
-            if ((wp & 0xFFF0) == SC_MOUSEMENU || ((wp & 0xFFF0) == SC_KEYMENU && lp == ' ')) return 0;
+        case WM_SYSCOMMAND:  // no system menu: Alt, Alt+Space, F10 and clicking the title bar icon
+            if ((wp & 0xFFF0) == SC_MOUSEMENU || (wp & 0xFFF0) == SC_KEYMENU) return 0;
             break;
         case WM_CONTEXTMENU:  // no system menu on right-clicking the title bar
             return 0;
