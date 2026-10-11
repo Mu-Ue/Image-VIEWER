@@ -12,8 +12,8 @@
 #include "imaging/encoder.h"
 #include "platform/clipboard.h"
 #include "platform/file_dialog.h"
-#include "ui/downscale.h"
 #include "ui/menu_bar.h"
+#include "ui/scale.h"
 
 namespace {
 
@@ -65,7 +65,7 @@ void Render(HDC dc, HRGN update) {
         bool drawn = true;
         for (DWORD i = 0; i < count && drawn; ++i) {
             RECT r;
-            if (IntersectRect(&r, &rects[i], &client)) drawn = DrawDownscaled(dc, g.imageDC, x, y, w, h, r);
+            if (IntersectRect(&r, &rects[i], &client)) drawn = DrawScaled(dc, g.imageDC, x, y, w, h, r);
         }
         if (drawn) {
             ExcludeClipRect(dc, x, y, x + w, y + h);

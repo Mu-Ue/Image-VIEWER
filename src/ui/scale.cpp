@@ -1,4 +1,4 @@
-#include "ui/downscale.h"
+#include "ui/scale.h"
 
 #include <algorithm>
 #include <atomic>
@@ -138,7 +138,7 @@ void CALLBACK Work(PTP_CALLBACK_INSTANCE, void* job, PTP_WORK) { RunChunks(*stat
 
 }  // namespace
 
-bool DrawDownscaled(HDC dc, HDC imageDC, int x, int y, int width, int height, const RECT& clip) {
+bool DrawScaled(HDC dc, HDC imageDC, int x, int y, int width, int height, const RECT& clip) {
     DIBSECTION ds{};
     if (GetObjectW(GetCurrentObject(imageDC, OBJ_BITMAP), sizeof(ds), &ds) != sizeof(ds) || !ds.dsBm.bmBits) {
         return false;

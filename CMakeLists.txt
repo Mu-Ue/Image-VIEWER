@@ -14,7 +14,7 @@ add_executable(ImageVIEWER WIN32
     src/platform/clipboard.cpp
     src/platform/file_dialog.cpp
     src/platform/registration.cpp
-    src/ui/downscale.cpp
+    src/ui/scale.cpp
     src/ui/menu_bar.cpp
     src/ui/viewer.cpp
     res/app.rc
