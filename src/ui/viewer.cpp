@@ -517,6 +517,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_TIMER:
             if (wp == kAnimationTimer) NextFrame();
             return 0;
+        case WM_SYSCOMMAND:  // no system menu: Alt+Space and clicking the title bar icon
+            if ((wp & 0xFFF0) == SC_MOUSEMENU || ((wp & 0xFFF0) == SC_KEYMENU && lp == ' ')) return 0;
+            break;
+        case WM_CONTEXTMENU:  // no system menu on right-clicking the title bar
+            return 0;
         case WM_SYSCHAR:
             if (wp == 'f' || wp == 'F' || wp == 'v' || wp == 'V') {
                 ShowMenu(wp == 'f' || wp == 'F' ? kMenuFile : kMenuView, true);
@@ -568,20 +573,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-// Dark popup menus. uxtheme's SetPreferredAppMode (ordinal 135, Windows 10 1903+) is undocumented,
-// so it is looked up at run time and skipped if missing.
-void EnableDarkMenus() {
-    using SetPreferredAppMode = int(WINAPI*)(int);
-    constexpr int kForceDark = 2;
-    if (HMODULE uxtheme = LoadLibraryExW(L"uxtheme.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32)) {
-        const auto set = reinterpret_cast<SetPreferredAppMode>(GetProcAddress(uxtheme, MAKEINTRESOURCEA(135)));
-        if (set) set(kForceDark);
-    }
-}
-
 HWND CreateMainWindow(HINSTANCE instance) {
-    EnableDarkMenus();
-
     WNDCLASSEXW wc{sizeof(wc)};
     wc.style = CS_DBLCLKS;
     wc.lpfnWndProc = WndProc;
