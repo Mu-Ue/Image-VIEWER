@@ -76,6 +76,15 @@ HRESULT CopyImageData(UINT format, Microsoft::WRL::ComPtr<IStream>& out) {
         if (BYTE* d = static_cast<BYTE*>(GlobalLock(copy))) {
             std::copy_n(reinterpret_cast<const BYTE*>(&file), header, d);
             std::copy_n(p, size, d + header);
+            // A color profile may be linked by file path, even on a network share: say sRGB instead, which
+            // leaves every pixel as it is, since profiles are never applied.
+            BITMAPV5HEADER v5;
+            if (!png && size >= sizeof(v5) && (memcpy(&v5, p, sizeof(v5)), v5.bV5Size == sizeof(v5)) &&
+                (v5.bV5CSType == PROFILE_LINKED || v5.bV5CSType == PROFILE_EMBEDDED)) {
+                v5.bV5CSType = LCS_sRGB;
+                v5.bV5ProfileData = v5.bV5ProfileSize = 0;
+                memcpy(d + header, &v5, sizeof(v5));
+            }
             GlobalUnlock(copy);
             hr = CreateStreamOnHGlobal(copy, TRUE, &out);
         } else {
