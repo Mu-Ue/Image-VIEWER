@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <utility>
+#include <vector>
 
 #include "platform/pages.h"
 
@@ -159,11 +160,24 @@ void RunChunks(Job& job) {
     }
 }
 
-void CALLBACK Work(PTP_CALLBACK_INSTANCE, void* job, PTP_WORK) { RunChunks(*static_cast<Job*>(job)); }
-
 // The helpers' own pool: the process-wide one would keep its threads around after the image is closed.
 PTP_POOL pool;
 TP_CALLBACK_ENVIRON environment;
+
+// The pool's threads, so StopScaleThreads can wait until they have exited and freed their memory.
+std::vector<HANDLE> threads;
+SRWLOCK threadsLock = SRWLOCK_INIT;
+
+void CALLBACK Work(PTP_CALLBACK_INSTANCE, void* job, PTP_WORK) {
+    thread_local bool known;
+    if (!known) {
+        known = true;
+        AcquireSRWLockExclusive(&threadsLock);
+        if (const HANDLE t = OpenThread(SYNCHRONIZE, FALSE, GetCurrentThreadId())) threads.push_back(t);
+        ReleaseSRWLockExclusive(&threadsLock);
+    }
+    RunChunks(*static_cast<Job*>(job));
+}
 
 // Starts the pool if needed, returning false if there is none.
 bool StartPool(int threads) {
@@ -238,4 +252,9 @@ void StopScaleThreads() {
     DestroyThreadpoolEnvironment(&environment);
     CloseThreadpool(pool);
     pool = nullptr;
+    for (const HANDLE t : threads) {
+        WaitForSingleObject(t, INFINITE);
+        CloseHandle(t);
+    }
+    threads.clear();
 }

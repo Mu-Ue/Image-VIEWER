@@ -7,5 +7,5 @@
 // bitmap is not a 24bpp or palettized DIB section, so the caller can fall back to StretchBlt.
 bool DrawScaled(HDC dc, HDC imageDC, int x, int y, int width, int height, const RECT& clip);
 
-// Ends the threads DrawScaled computes on; the next draw starts them again.
+// Ends the threads DrawScaled computes on, returning once they have exited; the next draw starts them again.
 void StopScaleThreads();
