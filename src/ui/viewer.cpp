@@ -42,13 +42,13 @@ struct Viewer {
 void Render(HDC dc, HRGN update) {
     const float z = g.zoom;
     const RECT client{0, 0, LONG(g.clientW), LONG(g.clientH)};
-    if (z < 1.0f && g.image.bitmap) {
-        // Shrunk: each screen pixel is the exact average of its image area, computed only where painted,
-        // one rectangle at a time so the L-shaped strips a diagonal pan uncovers stay small.
-        const float ox = std::round(g.offsetX), oy = std::round(g.offsetY);
-        const int x = int(ox), y = int(oy);
-        const int w = int(std::lround(ox + g.image.width * z)) - x;
-        const int h = int(std::lround(oy + g.image.height * z)) - y;
+    if (g.image.bitmap) {
+        // Each screen pixel is the exact average of its image area, computed only where painted, one
+        // rectangle at a time so the L-shaped strips a diagonal pan uncovers stay small. The drawn size
+        // depends on the zoom alone, so a pan never changes which image area a pixel covers.
+        const int x = int(std::round(g.offsetX)), y = int(std::round(g.offsetY));
+        const int w = int(std::lround(double(g.image.width) * z));
+        const int h = int(std::lround(double(g.image.height) * z));
         union {
             RGNDATA data;
             BYTE bytes[sizeof(RGNDATAHEADER) + 8 * sizeof(RECT)];
