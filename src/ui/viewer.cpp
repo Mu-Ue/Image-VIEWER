@@ -125,8 +125,8 @@ void ZoomAt(float zoom, float x, float y) {
     InvalidateRect(g.hwnd, nullptr, FALSE);
 }
 
-// Moves the image and paints it right away. Shrunk images are exact per pixel relative to the image's
-// top left, so the drawn pixels are scrolled and only the uncovered strips are computed.
+// Moves the image and paints it right away. Drawn pixels are exact relative to the image's top left, so
+// they are scrolled and only the uncovered strips are computed.
 void Pan(float dx, float dy) {
     const float x0 = std::round(g.offsetX), y0 = std::round(g.offsetY);
     g.offsetX += dx;
@@ -134,12 +134,8 @@ void Pan(float dx, float dy) {
     ClampOffset();
     const int sx = int(std::round(g.offsetX) - x0), sy = int(std::round(g.offsetY) - y0);
     if (sx == 0 && sy == 0) return;
-    if (g.zoom < 1.0f) {
-        const RECT area{0, g.barH, LONG(g.clientW), g.barH + LONG(g.clientH)};
-        ScrollWindowEx(g.hwnd, sx, sy, &area, &area, nullptr, nullptr, SW_INVALIDATE);
-    } else {
-        InvalidateRect(g.hwnd, nullptr, FALSE);
-    }
+    const RECT area{0, g.barH, LONG(g.clientW), g.barH + LONG(g.clientH)};
+    ScrollWindowEx(g.hwnd, sx, sy, &area, &area, nullptr, nullptr, SW_INVALIDATE);
     UpdateWindow(g.hwnd);
 }
 
