@@ -69,6 +69,7 @@ inline UINT32 Average(UINT64 sum, UINT64 area, double inverse) {
 
 constexpr int kBand = 256;  // output rows drawn at a time
 constexpr int kChunk = 16;  // output rows a thread takes at a time
+constexpr UINT64 kMinParallelPixels = 1 << 16;  // smaller bands are drawn by the calling thread alone
 
 // One draw, shared by the threads that compute it.
 struct Job {
@@ -224,7 +225,13 @@ bool DrawScaled(HDC dc, HDC imageDC, int x, int y, int width, int height, const 
         job.n = std::min(kBand, r1 - b0);
         job.next = 0;
         job.slot = 0;  // every callback of the previous band has finished
-        for (int i = std::min(helpers, (job.n - 1) / kChunk); work && i > 0; --i) SubmitThreadpoolWork(work);
+        // A thin strip, as a pan uncovers, is drawn sooner alone than by waking the helpers.
+        const UINT top = Cover(UINT(b0), srcH, UINT(height)).first;
+        const UINT srcRows = Cover(UINT(b0 + job.n - 1), srcH, UINT(height)).last + 1 - top;
+        const bool parallel = std::max(UINT64(cols) * job.n, UINT64(x1 - x0) * srcRows) >= kMinParallelPixels;
+        for (int i = parallel ? std::min(helpers, (job.n - 1) / kChunk) : 0; work && i > 0; --i) {
+            SubmitThreadpoolWork(work);
+        }
         RunChunks(job);
         if (work) WaitForThreadpoolWorkCallbacks(work, FALSE);
         header.biHeight = -job.n;  // top-down
