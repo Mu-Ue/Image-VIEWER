@@ -1,25 +1,37 @@
 #include "imaging/encoder.h"
 
+#include <cstring>
 #include <vector>
+
+#include "platform/handle_stream.h"
 
 using Microsoft::WRL::ComPtr;
 
 namespace {
 
 // Creates a new, empty file next to path to write into, never reusing an existing one.
-std::wstring CreateTempFile(const std::wstring& path) {
+HANDLE CreateTempFile(const std::wstring& path) {
     const std::wstring prefix = path + L"." + std::to_wstring(GetCurrentProcessId()) + L".";
     for (UINT i = 0; i < 100; ++i) {
-        std::wstring temp = prefix + std::to_wstring(i) + L".tmp";
-        const HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
-                                        nullptr);
-        if (file != INVALID_HANDLE_VALUE) {
-            CloseHandle(file);
-            return temp;
-        }
-        if (GetLastError() != ERROR_FILE_EXISTS) break;
+        const std::wstring temp = prefix + std::to_wstring(i) + L".tmp";
+        const HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE | DELETE, 0, nullptr, CREATE_NEW,
+                                        FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file != INVALID_HANDLE_VALUE || GetLastError() != ERROR_FILE_EXISTS) return file;
     }
-    return {};
+    return INVALID_HANDLE_VALUE;
+}
+
+// Renames an open file to path, replacing any file there.
+HRESULT RenameTo(HANDLE file, const std::wstring& path) {
+    const DWORD bytes = DWORD(path.size() * sizeof(wchar_t));
+    std::vector<BYTE> buffer(sizeof(FILE_RENAME_INFO) + bytes);
+    auto* const info = reinterpret_cast<FILE_RENAME_INFO*>(buffer.data());
+    info->ReplaceIfExists = TRUE;
+    info->FileNameLength = bytes;
+    memcpy(info->FileName, path.data(), bytes);
+    return SetFileInformationByHandle(file, FileRenameInfo, info, DWORD(buffer.size()))
+               ? S_OK
+               : HRESULT_FROM_WIN32(GetLastError());
 }
 
 // The container for path's extension, matching kSaveFilter; PNG for anything else.
@@ -218,28 +230,28 @@ HRESULT EncodeDib(IWICImagingFactory* wic, IWICBitmapSource* source, HGLOBAL& ou
 }  // namespace
 
 // Writes a temporary file first so a failure never leaves a partial file and the source itself can
-// be overwritten.
+// be overwritten. The file is written, renamed and deleted through one handle, so another program can't
+// swap in a different file, or a link to one, along the way.
 HRESULT SaveImage(const Source& src, const std::wstring& path) {
-    const std::wstring temp = CreateTempFile(path);
-    if (temp.empty()) return HRESULT_FROM_WIN32(GetLastError());
-
-    HRESULT hr;
-    {
+    const HANDLE file = CreateTempFile(path);
+    if (file == INVALID_HANDLE_VALUE) return HRESULT_FROM_WIN32(GetLastError());
+    ComPtr<IStream> stream;  // owns the file once made
+    HRESULT hr = CreateHandleStream(file, stream);
+    if (SUCCEEDED(hr)) {
         const WicFactory wic;
         hr = wic.hr;
         ComPtr<IWICBitmapSource> source;
         UINT width = 0, height = 0;
         if (SUCCEEDED(hr)) hr = OpenSource(wic.Get(), src, 0, source, width, height);
-        ComPtr<IWICStream> stream;
-        if (SUCCEEDED(hr)) hr = wic->CreateStream(&stream);
-        if (SUCCEEDED(hr)) hr = stream->InitializeFromFilename(temp.c_str(), GENERIC_WRITE);
         if (SUCCEEDED(hr)) hr = Encode(wic.Get(), source.Get(), stream.Get(), ContainerFor(path));
-    }  // closes the temporary file
+    }  // releases the source file, which may be the one replaced
 
-    if (SUCCEEDED(hr) && !MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-        hr = HRESULT_FROM_WIN32(GetLastError());
+    if (SUCCEEDED(hr)) hr = RenameTo(file, path);
+    if (FAILED(hr)) {
+        FILE_DISPOSITION_INFO remove{TRUE};
+        SetFileInformationByHandle(file, FileDispositionInfo, &remove, sizeof(remove));
     }
-    if (FAILED(hr)) DeleteFileW(temp.c_str());
+    if (!stream) CloseHandle(file);
     return hr;
 }
 
