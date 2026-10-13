@@ -33,11 +33,17 @@ LONG Height(const RECT& r) { return r.bottom - r.top; }
 }  // namespace
 
 HRESULT ReadAnimation(IWICImagingFactory* wic, IWICBitmapDecoder* decoder, Animation& out) {
+    // Counted by asking for frames in turn: WIC indexes a GIF only as far as asked, so a file of millions of
+    // tiny frames stops at the cap instead of being indexed whole. Asking in order also keeps clear of a WIC
+    // quirk, where jumping past the last frame makes up one more.
     UINT count = 0;
+    for (ComPtr<IWICBitmapFrameDecode> frame; count <= kMaxGifFrames && SUCCEEDED(decoder->GetFrame(count, &frame));) {
+        ++count;
+    }
+    if (count > kMaxGifFrames) return WINCODEC_ERR_IMAGESIZEOUTOFRANGE;
+    if (count < 2) return WINCODEC_ERR_UNSUPPORTEDOPERATION;
     ComPtr<IWICMetadataQueryReader> reader;
-    HRESULT hr = decoder->GetFrameCount(&count);
-    if (SUCCEEDED(hr) && count < 2) hr = WINCODEC_ERR_UNSUPPORTEDOPERATION;
-    if (SUCCEEDED(hr)) hr = decoder->GetMetadataQueryReader(&reader);
+    HRESULT hr = decoder->GetMetadataQueryReader(&reader);
     if (FAILED(hr)) return hr;
     const UINT width = ReadUint(reader.Get(), L"/logscrdesc/Width", 0);
     const UINT height = ReadUint(reader.Get(), L"/logscrdesc/Height", 0);
