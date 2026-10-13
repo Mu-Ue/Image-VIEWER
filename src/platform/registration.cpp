@@ -55,6 +55,30 @@ HRESULT UpdateShortcut(const wchar_t* exe) {
     return hr;
 }
 
+void RemoveOpenWith(const wchar_t* ext) {
+    RegDeleteKeyValueW(HKEY_CURRENT_USER, (std::wstring(L"Software\\Classes\\") + ext + L"\\OpenWithProgids").c_str(),
+                       kProgId);
+}
+
+// Removes every key a registration wrote, including extensions only an older version listed.
+void RemoveKeys() {
+    HKEY assoc;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, (std::wstring(L"Software\\") + kAppId + L"\\Capabilities\\FileAssociations").c_str(),
+                      0, KEY_QUERY_VALUE, &assoc) == ERROR_SUCCESS) {
+        wchar_t ext[256];
+        for (DWORD i = 0, size = ARRAYSIZE(ext);
+             RegEnumValueW(assoc, i, ext, &size, nullptr, nullptr, nullptr, nullptr) != ERROR_NO_MORE_ITEMS;
+             ++i, size = ARRAYSIZE(ext)) {
+            if (ext[0] == L'.') RemoveOpenWith(ext);
+        }
+        RegCloseKey(assoc);
+    }
+    for (const wchar_t* ext : kExtensions) RemoveOpenWith(ext);
+    RegDeleteTreeW(HKEY_CURRENT_USER, (std::wstring(L"Software\\Classes\\") + kProgId).c_str());
+    RegDeleteTreeW(HKEY_CURRENT_USER, (std::wstring(L"Software\\") + kAppId).c_str());
+    RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Software\\RegisteredApplications", kAppId);
+}
+
 }  // namespace
 
 int Register() {
@@ -62,6 +86,8 @@ int Register() {
     const DWORD len = GetModuleFileNameW(nullptr, exe, ARRAYSIZE(exe));
     if (len == 0 || len == ARRAYSIZE(exe)) return 1;
 
+    // Start clean, so nothing from an older version or another path is left behind.
+    RemoveKeys();
     const std::wstring progKey = std::wstring(L"Software\\Classes\\") + kProgId;
     const std::wstring capsKey = std::wstring(L"Software\\") + kAppId + L"\\Capabilities";
     const std::wstring icon = L"\"" + std::wstring(exe) + L"\",0";
@@ -76,9 +102,9 @@ int Register() {
         status |= RegSetKeyValueW(HKEY_CURRENT_USER, (std::wstring(L"Software\\Classes\\") + ext + L"\\OpenWithProgids").c_str(),
                                   kProgId, REG_NONE, nullptr, 0);
     }
-    // Listed last, so Windows only sees the app once everything it points to is in place. Deleted first
-    // because value names keep their old casing, and Settings matches registeredAppUser case-sensitively.
-    RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Software\\RegisteredApplications", kAppId);
+    // Listed last, so Windows only sees the app once everything it points to is in place. RemoveKeys
+    // deleted it first because value names keep their old casing, and Settings matches
+    // registeredAppUser case-sensitively.
     status |= SetString(L"Software\\RegisteredApplications", kAppId, capsKey);
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
     if (status != ERROR_SUCCESS) return 1;
@@ -95,13 +121,7 @@ int Register() {
 }
 
 int Unregister() {
-    RegDeleteTreeW(HKEY_CURRENT_USER, (std::wstring(L"Software\\Classes\\") + kProgId).c_str());
-    RegDeleteTreeW(HKEY_CURRENT_USER, (std::wstring(L"Software\\") + kAppId).c_str());
-    RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Software\\RegisteredApplications", kAppId);
-    for (const wchar_t* ext : kExtensions) {
-        RegDeleteKeyValueW(HKEY_CURRENT_USER, (std::wstring(L"Software\\Classes\\") + ext + L"\\OpenWithProgids").c_str(),
-                           kProgId);
-    }
+    RemoveKeys();
     const std::wstring shortcut = ShortcutPath();
     if (!shortcut.empty()) DeleteFileW(shortcut.c_str());
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
