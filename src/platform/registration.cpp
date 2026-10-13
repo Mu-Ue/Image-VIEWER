@@ -4,6 +4,8 @@
 #include <objbase.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <shobjidl.h>
+#include <wrl/client.h>
 
 #include <string>
 
@@ -11,9 +13,46 @@
 
 namespace {
 
+using Microsoft::WRL::ComPtr;
+
 LSTATUS SetString(const std::wstring& key, const wchar_t* name, const std::wstring& value) {
     return RegSetKeyValueW(HKEY_CURRENT_USER, key.c_str(), name, REG_SZ, value.c_str(),
                            DWORD((value.size() + 1) * sizeof(wchar_t)));
+}
+
+// Per user Start menu shortcut, so Windows search finds the app.
+std::wstring ShortcutPath() {
+    PWSTR programs = nullptr;
+    std::wstring path;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Programs, 0, nullptr, &programs))) {
+        path = std::wstring(programs) + L"\\" + kAppName + L".lnk";
+    }
+    CoTaskMemFree(programs);
+    return path;
+}
+
+// Points the shortcut at exe. Its name is fixed, so a shortcut to a moved exe is replaced, not duplicated.
+HRESULT UpdateShortcut(const wchar_t* exe) {
+    const std::wstring path = ShortcutPath();
+    if (path.empty()) return E_FAIL;
+    ComPtr<IShellLinkW> link;
+    HRESULT hr = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link));
+    ComPtr<IPersistFile> file;
+    if (SUCCEEDED(hr)) hr = link.As(&file);
+    if (FAILED(hr)) return hr;
+
+    wchar_t target[MAX_PATH * 4];
+    if (SUCCEEDED(file->Load(path.c_str(), STGM_READ)) &&
+        link->GetPath(target, ARRAYSIZE(target), nullptr, SLGP_RAWPATH) == S_OK && _wcsicmp(target, exe) == 0) {
+        return S_OK;
+    }
+    std::wstring dir = exe;
+    dir.resize(dir.find_last_of(L'\\'));
+    hr = link->SetPath(exe);
+    if (SUCCEEDED(hr)) hr = link->SetWorkingDirectory(dir.c_str());
+    if (SUCCEEDED(hr)) hr = link->SetIconLocation(exe, 0);
+    if (SUCCEEDED(hr)) hr = file->Save(path.c_str(), TRUE);
+    return hr;
 }
 
 }  // namespace
@@ -44,13 +83,15 @@ int Register() {
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
     if (status != ERROR_SUCCESS) return 1;
 
-    // ShellExecute needs COM for protocol links like ms-settings:.
-    if (SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE))) {
+    // The shortcut and ShellExecute (for protocol links like ms-settings:) need COM.
+    if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE))) return 1;
+    const HRESULT hr = UpdateShortcut(exe);
+    if (SUCCEEDED(hr)) {
         ShellExecuteW(nullptr, nullptr, (std::wstring(L"ms-settings:defaultapps?registeredAppUser=") + kAppId).c_str(),
                       nullptr, nullptr, SW_SHOWNORMAL);
-        CoUninitialize();
     }
-    return 0;
+    CoUninitialize();
+    return SUCCEEDED(hr) ? 0 : 1;
 }
 
 int Unregister() {
@@ -61,6 +102,8 @@ int Unregister() {
         RegDeleteKeyValueW(HKEY_CURRENT_USER, (std::wstring(L"Software\\Classes\\") + ext + L"\\OpenWithProgids").c_str(),
                            kProgId);
     }
+    const std::wstring shortcut = ShortcutPath();
+    if (!shortcut.empty()) DeleteFileW(shortcut.c_str());
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
     return 0;
 }
