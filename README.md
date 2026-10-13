@@ -41,10 +41,10 @@ ImageVIEWER.exe [photo.jpg]
 
 ## Set as default viewer
 
-Put the exe where it will stay, then run:
+Put the exe and `register.bat` where they will stay, then double-click `register.bat`. Or run:
 
 ```
 ImageVIEWER.exe --register
 ```
 
-This opens Settings → Default apps, where you pick ImageVIEWER. Run `--unregister` to remove it.
+This adds ImageVIEWER to the Start menu and opens Settings → Default apps, where you pick it. Run `--unregister` to remove both.

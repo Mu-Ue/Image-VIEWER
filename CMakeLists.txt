@@ -35,3 +35,5 @@ target_link_libraries(ImageVIEWER PRIVATE delayimp kernel32 user32 gdi32 imm32 d
 target_link_options(ImageVIEWER PRIVATE /DELAYLOAD:comdlg32.dll /DELAYLOAD:shell32.dll)
 # Control-flow guard, shadow stack, and DLL imports from System32 only (no planted DLLs next to the exe).
 target_link_options(ImageVIEWER PRIVATE /GUARD:CF /GUARD:EHCONT /CETCOMPAT /DEPENDENTLOADFLAG:0x800)
+# Double-clickable helper next to the exe that runs --register.
+configure_file(register.bat ${CMAKE_BINARY_DIR}/register.bat COPYONLY)
