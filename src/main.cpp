@@ -44,10 +44,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
 
     if (!StartViewer(instance, std::move(path), showCmd)) return 1;
 
-    MSG msg;
-    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
+    // Handles all queued input before painting a pan, which waits for the frame timer.
+    const HANDLE frame = FrameTimer();
+    for (;;) {
+        if (MsgWaitForMultipleObjectsEx(1, &frame, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE) == WAIT_OBJECT_0) {
+            PresentFrame();
+        }
+        MSG msg;
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) return int(msg.wParam);
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
     }
-    return 0;
 }

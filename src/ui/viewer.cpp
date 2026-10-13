@@ -21,6 +21,7 @@
 namespace {
 
 constexpr UINT_PTR kAnimationTimer = 1;
+constexpr LONGLONG kFrameLeadUs = 1000;  // a pan is painted this long before the display refreshes
 
 struct Viewer {
     HWND hwnd = nullptr;
@@ -38,6 +39,9 @@ struct Viewer {
     float imageW = 0, imageH = 0;  // upright size in pixels
     float clientW = 0, clientH = 0;
     float zoom = 1, offsetX = 0, offsetY = 0;  // offset = image top-left in client pixels
+    int shownX = 0, shownY = 0;  // the offset on screen, which a pan catches up to once per display refresh
+    HANDLE frameTimer = nullptr;  // signaled when a pan should be painted
+    bool frameArmed = false;
     bool fit = true;
     bool dragging = false;
     POINT dragFrom{};
@@ -53,7 +57,7 @@ void Render(HDC dc, HRGN update) {
         // Each screen pixel is the exact average of its image area, computed only where painted, one
         // rectangle at a time so the L-shaped strips a diagonal pan uncovers stay small. The drawn size
         // depends on the zoom alone, so a pan never changes which image area a pixel covers.
-        const int x = int(std::round(g.offsetX)), y = int(std::round(g.offsetY));
+        const int x = g.shownX, y = g.shownY;
         const int w = int(std::lround(double(g.image.width) * z));
         const int h = int(std::lround(double(g.image.height) * z));
         union {
@@ -82,12 +86,12 @@ void Render(HDC dc, HRGN update) {
     }
 
     // Only stretch the part of the image that is on screen.
-    const int sx0 = std::max(0, int(std::floor(-g.offsetX / z)));
-    const int sy0 = std::max(0, int(std::floor(-g.offsetY / z)));
-    const int sx1 = std::min(int(g.image.width), int(std::ceil((g.clientW - g.offsetX) / z)));
-    const int sy1 = std::min(int(g.image.height), int(std::ceil((g.clientH - g.offsetY) / z)));
+    const float ox = float(g.shownX), oy = float(g.shownY);
+    const int sx0 = std::max(0, int(std::floor(-ox / z)));
+    const int sy0 = std::max(0, int(std::floor(-oy / z)));
+    const int sx1 = std::min(int(g.image.width), int(std::ceil((g.clientW - ox) / z)));
+    const int sy1 = std::min(int(g.image.height), int(std::ceil((g.clientH - oy) / z)));
     if (sx1 > sx0 && sy1 > sy0) {
-        const float ox = std::round(g.offsetX), oy = std::round(g.offsetY);
         const int dx0 = int(std::lround(ox + sx0 * z)), dy0 = int(std::lround(oy + sy0 * z));
         const int dx1 = int(std::lround(ox + sx1 * z)), dy1 = int(std::lround(oy + sy1 * z));
         SetStretchBltMode(dc, z >= 3.0f ? COLORONCOLOR : HALFTONE);
@@ -108,6 +112,12 @@ void ClampOffset() {
     const float w = g.imageW * g.zoom, h = g.imageH * g.zoom;
     g.offsetX = w <= g.clientW ? (g.clientW - w) / 2 : std::clamp(g.offsetX, g.clientW - w, 0.0f);
     g.offsetY = h <= g.clientH ? (g.clientH - h) / 2 : std::clamp(g.offsetY, g.clientH - h, 0.0f);
+}
+
+// Puts the offset on screen at the next full repaint.
+void ShowOffset() {
+    g.shownX = int(std::round(g.offsetX));
+    g.shownY = int(std::round(g.offsetY));
 }
 
 void UpdateStatus() {
@@ -137,22 +147,35 @@ void ZoomAt(float zoom, float x, float y) {
     g.zoom = zoom;
     g.fit = zoom == fitZoom;
     ClampOffset();
+    ShowOffset();
     UpdateStatus();
     InvalidateRect(g.hwnd, nullptr, FALSE);
 }
 
-// Moves the image and paints it right away. Drawn pixels are exact relative to the image's top left, so
-// they are scrolled and only the uncovered strips are computed.
+// Moves the image with every mouse move, but paints it only once per display refresh, just before the
+// compositor takes the frame: positions in between would never be seen.
 void Pan(float dx, float dy) {
-    const float x0 = std::round(g.offsetX), y0 = std::round(g.offsetY);
     g.offsetX += dx;
     g.offsetY += dy;
     ClampOffset();
-    const int sx = int(std::round(g.offsetX) - x0), sy = int(std::round(g.offsetY) - y0);
-    if (sx == 0 && sy == 0) return;
-    const RECT area{0, g.barH, LONG(g.clientW), g.barH + LONG(g.clientH)};
-    ScrollWindowEx(g.hwnd, sx, sy, &area, &area, nullptr, nullptr, SW_INVALIDATE);
-    UpdateWindow(g.hwnd);
+    if (g.frameArmed || (int(std::round(g.offsetX)) == g.shownX && int(std::round(g.offsetY)) == g.shownY)) return;
+    DWM_TIMING_INFO info{sizeof(info)};
+    LARGE_INTEGER now, freq;
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&freq);
+    if (SUCCEEDED(DwmGetCompositionTimingInfo(nullptr, &info)) && info.qpcRefreshPeriod) {
+        // The next paint deadline, a little before a refresh: a move after one waits for the next.
+        const LONGLONG period = LONGLONG(info.qpcRefreshPeriod);
+        LONGLONG deadline = LONGLONG(info.qpcVBlank) - freq.QuadPart * kFrameLeadUs / 1000000;
+        if (now.QuadPart >= deadline) deadline += ((now.QuadPart - deadline) / period + 1) * period;
+        // Relative, in 100 ns units.
+        LARGE_INTEGER due{.QuadPart = -std::max((deadline - now.QuadPart) * 10000000 / freq.QuadPart, 1LL)};
+        if (SetWaitableTimer(g.frameTimer, &due, 0, nullptr, nullptr, FALSE)) {
+            g.frameArmed = true;
+            return;
+        }
+    }
+    PresentFrame();
 }
 
 // Shows the next frame of an animated GIF, repainting only the image.
@@ -162,7 +185,7 @@ void NextFrame() {
     a.current = (a.current + 1) % a.frames.size();
     GdiFlush();  // GDI may still be reading the canvas
     SetTimer(g.hwnd, kAnimationTimer, ShowFrame(a, a.current), nullptr);
-    const LONG x = std::lround(g.offsetX), y = g.barH + std::lround(g.offsetY);
+    const LONG x = g.shownX, y = g.barH + g.shownY;
     const RECT r{x, y, x + LONG(std::lround(g.imageW * g.zoom)), y + LONG(std::lround(g.imageH * g.zoom))};
     InvalidateRect(g.hwnd, &r, FALSE);
 }
@@ -180,6 +203,7 @@ void OnSize(float width, float height) {
         g.offsetY += dy;
     }
     ClampOffset();
+    ShowOffset();
     UpdateStatus();
     InvalidateRect(g.hwnd, nullptr, FALSE);
 }
@@ -251,6 +275,7 @@ void SetImage(const Image& image, std::wstring name, UINT64 bytes = 0, Animation
     g.zoom = FitZoom();
     g.fit = true;
     ClampOffset();
+    ShowOffset();
     SetWindowTextW(g.hwnd, g.name.c_str());
     UpdateStatus();
     EnableImageCommands(true, !g.source.path.empty());
@@ -598,6 +623,24 @@ HWND CreateMainWindow(HINSTANCE instance) {
 
 }  // namespace
 
+// Scrolls the drawn pixels to the current offset, computing only the uncovered strips: drawn pixels are
+// exact relative to the image's top left.
+void PresentFrame() {
+    g.frameArmed = false;
+    const int x = int(std::round(g.offsetX)), y = int(std::round(g.offsetY));
+    const int sx = x - g.shownX, sy = y - g.shownY;
+    if (sx == 0 && sy == 0) return;
+    g.shownX = x;
+    g.shownY = y;
+    const RECT area{0, g.barH, LONG(g.clientW), g.barH + LONG(g.clientH)};
+    ScrollWindowEx(g.hwnd, sx, sy, &area, &area, nullptr, nullptr, SW_INVALIDATE);
+    UpdateWindow(g.hwnd);
+}
+
+HANDLE FrameTimer() {
+    return g.frameTimer;
+}
+
 bool StartViewer(HINSTANCE instance, std::wstring path, int showCmd) {
     g.source.path = std::move(path);
     g.name = g.source.path.substr(g.source.path.find_last_of(L"\\/") + 1);
@@ -620,7 +663,8 @@ bool StartViewer(HINSTANCE instance, std::wstring path, int showCmd) {
     if (!g.hwnd) return false;
 
     g.imageDC = CreateCompatibleDC(nullptr);
-    if (!g.imageDC) return false;
+    g.frameTimer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    if (!g.imageDC || !g.frameTimer) return false;
     if (image.bitmap) SetImage(image, g.name, 0, std::move(animation));
 
     PlaceWindow();
