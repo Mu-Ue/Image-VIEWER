@@ -2,20 +2,20 @@
 
 # ImageVIEWER
 
-A minimal, fast, highly optimized native image viewer for Windows (Win32 + WIC + GDI) with ~1 MB idle memory usage.
+A lightweight and highly optimized image viewer for Windows, built on native APIs.
 
 ![ImageVIEWER showing its own icon](docs/screenshot.png)
 
 ## Build
 
-Requires Visual Studio (or Build Tools) with the C++ workload. Run `build.bat`, or from a Developer Command Prompt:
+Requires Visual Studio or the Build Tools with the C++ workload. Run `build.bat`, or use a Developer Command Prompt:
 
 ```
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-Output: `build\ImageVIEWER.exe` (single file, no dependencies).
+This produces `build\ImageVIEWER.exe`, a single file with no dependencies.
 
 ## Use
 
@@ -47,4 +47,4 @@ Put the exe where it will stay, then run:
 ImageVIEWER.exe --register
 ```
 
-This opens Settings → Default apps, where you pick ImageVIEWER. `--unregister` removes it.
+This opens Settings → Default apps, where you pick ImageVIEWER. Run `--unregister` to remove it.
