@@ -79,8 +79,10 @@ void Render(HDC dc, HRGN update) {
             if (IntersectRect(&r, &rects[i], &client)) drawn = DrawScaled(dc, g.imageDC, x, y, w, h, r);
         }
         if (drawn) {
-            ExcludeClipRect(dc, x, y, x + w, y + h);
-            FillRect(dc, &client, g.background);
+            if (x > 0 || y > 0 || x + w < client.right || y + h < client.bottom) {  // background shows
+                ExcludeClipRect(dc, x, y, x + w, y + h);
+                FillRect(dc, &client, g.background);
+            }
             return;
         }
     }
