@@ -3,7 +3,7 @@
 #include <windows.h>
 
 constexpr wchar_t kAppId[] = L"ImageVIEWER";
-constexpr wchar_t kAppName[] = L"Image VIEWER";
+constexpr wchar_t kAppName[] = L"ImageVIEWER";
 constexpr wchar_t kProgId[] = L"ImageVIEWER.Image";
 constexpr const wchar_t* kExtensions[] = {
     L".jpg", L".jpeg", L".jpe", L".jfif", L".png", L".bmp", L".dib", L".gif", L".tif",

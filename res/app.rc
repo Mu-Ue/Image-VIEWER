@@ -12,10 +12,10 @@ BEGIN
     BEGIN
         BLOCK "040904B0"
         BEGIN
-            VALUE "FileDescription", "Image VIEWER"
+            VALUE "FileDescription", "ImageVIEWER"
             VALUE "FileVersion", "1.0.0"
-            VALUE "OriginalFilename", "Image VIEWER.exe"
-            VALUE "ProductName", "Image VIEWER"
+            VALUE "OriginalFilename", "ImageVIEWER.exe"
+            VALUE "ProductName", "ImageVIEWER"
             VALUE "ProductVersion", "1.0.0"
         END
     END

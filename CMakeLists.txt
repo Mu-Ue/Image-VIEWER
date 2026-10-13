@@ -34,5 +34,3 @@ target_link_libraries(ImageVIEWER PRIVATE delayimp kernel32 user32 gdi32 imm32 d
 target_link_options(ImageVIEWER PRIVATE /DELAYLOAD:comdlg32.dll /DELAYLOAD:shell32.dll)
 # Control-flow guard, shadow stack, and DLL imports from System32 only (no planted DLLs next to the exe).
 target_link_options(ImageVIEWER PRIVATE /GUARD:CF /CETCOMPAT /DEPENDENTLOADFLAG:0x800)
-# Spaces are not allowed in target names, only in the file name.
-set_target_properties(ImageVIEWER PROPERTIES OUTPUT_NAME "Image VIEWER")

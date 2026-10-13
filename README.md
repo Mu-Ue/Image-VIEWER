@@ -1,10 +1,10 @@
-<p align="center"><img src="docs/icon.png" width="128" alt="Image VIEWER icon"></p>
+<p align="center"><img src="docs/icon.png" width="128" alt="ImageVIEWER icon"></p>
 
-# Image VIEWER
+# ImageVIEWER
 
 A minimal, fast, highly optimized native image viewer for Windows (Win32 + WIC + GDI) with ~1 MB idle memory usage.
 
-![Image VIEWER showing its own icon](docs/screenshot.png)
+![ImageVIEWER showing its own icon](docs/screenshot.png)
 
 ## Build
 
@@ -15,12 +15,12 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-Output: `build\Image VIEWER.exe` (single file, no dependencies).
+Output: `build\ImageVIEWER.exe` (single file, no dependencies).
 
 ## Use
 
 ```
-"Image VIEWER.exe" [photo.jpg]
+ImageVIEWER.exe [photo.jpg]
 ```
 
 | Input                    | Action                    |
@@ -44,7 +44,7 @@ Output: `build\Image VIEWER.exe` (single file, no dependencies).
 Put the exe where it will stay, then run:
 
 ```
-"Image VIEWER.exe" --register
+ImageVIEWER.exe --register
 ```
 
-This opens Settings → Default apps, where you pick Image VIEWER. `--unregister` removes it.
+This opens Settings → Default apps, where you pick ImageVIEWER. `--unregister` removes it.
