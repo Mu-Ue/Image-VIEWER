@@ -6,6 +6,7 @@
 
 #include "config.h"
 #include "imaging/animation.h"
+#include "platform/handle_stream.h"
 #include "platform/pages.h"
 
 using Microsoft::WRL::ComPtr;
@@ -232,19 +233,16 @@ const GUID* SniffFormat(const BYTE* head, ULONG size) {
     return nullptr;
 }
 
-// Opens a path only if it names a regular file, not a device or pipe such as \\.\CON.
-HRESULT OpenFileStream(IWICImagingFactory* wic, const std::wstring& path, ComPtr<IStream>& out) {
+// Opens a path only if it names a regular file, not a device or pipe such as \\.\CON, and reads that same
+// file through the handle checked. A pipe server can only identify the user, never act as them.
+HRESULT OpenFileStream(const std::wstring& path, ComPtr<IStream>& out) {
     const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
-                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                                    OPEN_EXISTING,
+                                    FILE_ATTRIBUTE_NORMAL | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr);
     if (file == INVALID_HANDLE_VALUE) return HRESULT_FROM_WIN32(GetLastError());
-    const bool regular = GetFileType(file) == FILE_TYPE_DISK;
-    CloseHandle(file);
-    if (!regular) return WINCODEC_ERR_UNKNOWNIMAGEFORMAT;
-
-    ComPtr<IWICStream> stream;
-    HRESULT hr = wic->CreateStream(&stream);
-    if (SUCCEEDED(hr)) hr = stream->InitializeFromFilename(path.c_str(), GENERIC_READ);
-    if (SUCCEEDED(hr)) out = stream;
+    const HRESULT hr =
+        GetFileType(file) == FILE_TYPE_DISK ? CreateHandleStream(file, out) : WINCODEC_ERR_UNKNOWNIMAGEFORMAT;
+    if (FAILED(hr)) CloseHandle(file);
     return hr;
 }
 
@@ -269,7 +267,7 @@ HRESULT CreateDecoder(IWICImagingFactory* wic, IStream* stream, ComPtr<IWICBitma
 
 HRESULT OpenDecoder(IWICImagingFactory* wic, const Source& src, ComPtr<IWICBitmapDecoder>& decoder) {
     ComPtr<IStream> stream = src.stream;
-    HRESULT hr = stream ? S_OK : OpenFileStream(wic, src.path, stream);
+    HRESULT hr = stream ? S_OK : OpenFileStream(src.path, stream);
     if (SUCCEEDED(hr)) hr = CreateDecoder(wic, stream.Get(), decoder);
     return hr;
 }

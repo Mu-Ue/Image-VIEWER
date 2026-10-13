@@ -14,6 +14,7 @@ add_executable(ImageVIEWER WIN32
     src/imaging/encoder.cpp
     src/platform/clipboard.cpp
     src/platform/file_dialog.cpp
+    src/platform/handle_stream.cpp
     src/platform/registration.cpp
     src/ui/scale.cpp
     src/ui/menu_bar.cpp
