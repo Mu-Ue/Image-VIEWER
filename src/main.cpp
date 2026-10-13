@@ -20,6 +20,18 @@ void HardenProcess() {
     SetProcessMitigationPolicy(ProcessImageLoadPolicy, &policy, sizeof(policy));
 }
 
+// Keeps AppInit DLLs, Winsock LSPs, global window hooks and legacy IMEs out of the viewer, and ends it on
+// any use of an invalid handle. Not for the file dialog, which needs its shell extensions and IMEs.
+void HardenViewer() {
+    PROCESS_MITIGATION_EXTENSION_POINT_DISABLE_POLICY extensions{};
+    extensions.DisableExtensionPoints = 1;
+    SetProcessMitigationPolicy(ProcessExtensionPointDisablePolicy, &extensions, sizeof(extensions));
+    PROCESS_MITIGATION_STRICT_HANDLE_CHECK_POLICY handles{};
+    handles.RaiseExceptionOnInvalidHandleReference = 1;
+    handles.HandleExceptionsPermanentlyEnabled = 1;
+    SetProcessMitigationPolicy(ProcessStrictHandleCheckPolicy, &handles, sizeof(handles));
+}
+
 std::wstring Unquote(const wchar_t* s) {
     std::wstring arg(s ? s : L"");
     const auto first = arg.find_first_not_of(L" \t");
@@ -37,6 +49,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
     std::wstring path = Unquote(cmdLine);
     if (path == L"--register") return Register();
     if (path == L"--unregister") return Unregister();
+    HardenViewer();
 
     // The viewer has no text input, so never load the IME / text services stack (the file dialog runs
     // in its own process and keeps it).
