@@ -251,6 +251,14 @@ void PlaceWindow() {
                  w, h, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
+// Why a file can't be read or written, as a sentence, or empty if there is nothing more useful to say.
+std::wstring FileErrorReason(HRESULT hr) {
+    if (hr == HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED)) return L"Access is denied.";
+    if (hr == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION)) return L"Another program is using it.";
+    if (hr == HRESULT_FROM_WIN32(ERROR_DISK_FULL) || hr == STG_E_MEDIUMFULL) return L"The disk is full.";
+    return {};
+}
+
 // Why an image can't be opened, as a sentence, or empty if there is nothing more useful to say.
 std::wstring ErrorReason(HRESULT hr) {
     if (hr == WINCODEC_ERR_UNKNOWNIMAGEFORMAT || hr == WINCODEC_ERR_BADIMAGE) return L"It isn't a supported image.";
@@ -261,7 +269,7 @@ std::wstring ErrorReason(HRESULT hr) {
     if (hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) || hr == HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND)) {
         return L"The file doesn't exist.";
     }
-    return {};
+    return FileErrorReason(hr);
 }
 
 void ShowError(HRESULT hr, const std::wstring& name) {
@@ -412,7 +420,8 @@ void SaveAs() {
     HRESULT hr;
     ComThread(hr, [&] { return SaveImage(g.source, path); }).join();
     if (FAILED(hr)) {
-        const std::wstring message = L"Can't save \"" + path + L"\".";
+        std::wstring message = L"Can't save \"" + path + L"\".";
+        if (const std::wstring reason = FileErrorReason(hr); !reason.empty()) message += L"\n\n" + reason;
         MessageBoxW(g.hwnd, message.c_str(), kAppName, MB_OK | MB_ICONERROR);
     }
 }
