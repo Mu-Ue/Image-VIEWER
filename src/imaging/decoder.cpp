@@ -234,11 +234,12 @@ const GUID* SniffFormat(const BYTE* head, ULONG size) {
 }
 
 // Opens a path only if it names a regular file, not a device or pipe such as \\.\CON, and reads that same
-// file through the handle checked. A pipe server can only identify the user, never act as them.
+// file through the handle checked. A pipe server can only identify the user, never act as them. Files
+// another program has open for writing can still be viewed.
 HRESULT OpenFileStream(const std::wstring& path, ComPtr<IStream>& out) {
-    const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
-                                    OPEN_EXISTING,
-                                    FILE_ATTRIBUTE_NORMAL | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr);
+    const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                    nullptr, OPEN_EXISTING,
+                                    FILE_FLAG_SEQUENTIAL_SCAN | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr);
     if (file == INVALID_HANDLE_VALUE) return HRESULT_FROM_WIN32(GetLastError());
     const HRESULT hr =
         GetFileType(file) == FILE_TYPE_DISK ? CreateHandleStream(file, out) : WINCODEC_ERR_UNKNOWNIMAGEFORMAT;
