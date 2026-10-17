@@ -47,6 +47,10 @@ HRESULT OpenSource(IWICImagingFactory* wic, const Source& src, UINT maxSize,
                    Microsoft::WRL::ComPtr<IWICBitmapSource>& source, UINT& width, UINT& height,
                    bool* scaled = nullptr, int* orientation = nullptr);
 
+// Opens the encoded data of a file or pasted source, rewound, and sets format to its container. Fails for a
+// decoded bitmap or data in a format this viewer doesn't open.
+HRESULT OpenEncoded(const Source& src, Microsoft::WRL::ComPtr<IStream>& stream, GUID& format);
+
 struct Animation;
 
 // Decodes into the smallest exact DIB section. Needs COM initialized on the calling thread. If animation is

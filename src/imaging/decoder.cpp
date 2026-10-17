@@ -246,17 +246,24 @@ HRESULT OpenFileStream(const std::wstring& path, ComPtr<IStream>& out) {
     return hr;
 }
 
-// Creates the decoder for the format the data starts with, and only that one: data is never handed
-// to a codec for a different format than it claims to be, and anything else is rejected.
-HRESULT CreateDecoder(IWICImagingFactory* wic, IStream* stream, ComPtr<IWICBitmapDecoder>& out) {
+// Sets format to the container the stream's data starts with and rewinds it.
+HRESULT SniffStream(IStream* stream, const GUID*& format) {
     BYTE head[16];
     ULONG read = 0;
     HRESULT hr = stream->Seek({}, STREAM_SEEK_SET, nullptr);
     if (SUCCEEDED(hr)) hr = stream->Read(head, sizeof(head), &read);
     if (SUCCEEDED(hr)) hr = stream->Seek({}, STREAM_SEEK_SET, nullptr);
     if (FAILED(hr)) return hr;
-    const GUID* format = SniffFormat(head, read);
-    if (!format) return WINCODEC_ERR_UNKNOWNIMAGEFORMAT;
+    format = SniffFormat(head, read);
+    return format ? S_OK : WINCODEC_ERR_UNKNOWNIMAGEFORMAT;
+}
+
+// Creates the decoder for the format the data starts with, and only that one: data is never handed
+// to a codec for a different format than it claims to be, and anything else is rejected.
+HRESULT CreateDecoder(IWICImagingFactory* wic, IStream* stream, ComPtr<IWICBitmapDecoder>& out) {
+    const GUID* format = nullptr;
+    HRESULT hr = SniffStream(stream, format);
+    if (FAILED(hr)) return hr;
 
     ComPtr<IWICBitmapDecoder> decoder;
     hr = wic->CreateDecoder(*format, &GUID_VendorMicrosoft, &decoder);
@@ -368,6 +375,16 @@ HRESULT OpenDecoded(IWICImagingFactory* wic, IWICBitmapDecoder* decoder, UINT ma
 }
 
 }  // namespace
+
+HRESULT OpenEncoded(const Source& src, ComPtr<IStream>& stream, GUID& format) {
+    if (src.bitmap) return E_INVALIDARG;
+    stream = src.stream;
+    HRESULT hr = stream ? S_OK : OpenFileStream(src.path, stream);
+    const GUID* sniffed = nullptr;
+    if (SUCCEEDED(hr)) hr = SniffStream(stream.Get(), sniffed);
+    if (SUCCEEDED(hr)) format = *sniffed;
+    return hr;
+}
 
 HRESULT OpenSource(IWICImagingFactory* wic, const Source& src, UINT maxSize, ComPtr<IWICBitmapSource>& source,
                    UINT& width, UINT& height, bool* scaled, int* orientation) {

@@ -227,6 +227,18 @@ HRESULT EncodeDib(IWICImagingFactory* wic, IWICBitmapSource* source, HGLOBAL& ou
     return S_OK;
 }
 
+// Copies the rest of from into to.
+HRESULT CopyStream(IStream* from, IStream* to) {
+    std::vector<BYTE> buffer(1 << 16);
+    for (;;) {
+        ULONG n = 0;
+        HRESULT hr = from->Read(buffer.data(), ULONG(buffer.size()), &n);
+        if (FAILED(hr) || n == 0) return FAILED(hr) ? hr : S_OK;
+        hr = to->Write(buffer.data(), n, nullptr);
+        if (FAILED(hr)) return hr;
+    }
+}
+
 }  // namespace
 
 // Writes a temporary file first so a failure never leaves a partial file and the source itself can
@@ -238,12 +250,21 @@ HRESULT SaveImage(const Source& src, const std::wstring& path) {
     ComPtr<IStream> stream;  // owns the file once made
     HRESULT hr = CreateHandleStream(file, stream);
     if (SUCCEEDED(hr)) {
-        const WicFactory wic;
-        hr = wic.hr;
-        ComPtr<IWICBitmapSource> source;
-        UINT width = 0, height = 0;
-        if (SUCCEEDED(hr)) hr = OpenSource(wic.Get(), src, 0, source, width, height);
-        if (SUCCEEDED(hr)) hr = Encode(wic.Get(), source.Get(), stream.Get(), ContainerFor(path));
+        // Saving in the source's own format copies it byte for byte: re-encoding would lose quality,
+        // animation and metadata.
+        ComPtr<IStream> encoded;
+        GUID format{};
+        if (SUCCEEDED(OpenEncoded(src, encoded, format)) && format == ContainerFor(path)) {
+            hr = CopyStream(encoded.Get(), stream.Get());
+        } else {
+            encoded.Reset();
+            const WicFactory wic;
+            hr = wic.hr;
+            ComPtr<IWICBitmapSource> source;
+            UINT width = 0, height = 0;
+            if (SUCCEEDED(hr)) hr = OpenSource(wic.Get(), src, 0, source, width, height);
+            if (SUCCEEDED(hr)) hr = Encode(wic.Get(), source.Get(), stream.Get(), ContainerFor(path));
+        }
     }  // releases the source file, which may be the one replaced
 
     if (SUCCEEDED(hr)) hr = RenameTo(file, path);
