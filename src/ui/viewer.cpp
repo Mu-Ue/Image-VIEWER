@@ -595,6 +595,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_COMMAND:
             RunCommand(LOWORD(wp));
             return 0;
+        case WM_DROPFILES: {  // opens the first file dropped from Explorer
+            const HDROP drop = HDROP(wp);
+            std::wstring path = DroppedFile(drop);
+            DragFinish(drop);
+            if (!path.empty()) {
+                std::wstring name = FileName(path);
+                Load({std::move(path)}, std::move(name));
+            }
+            return 0;
+        }
         case WM_TIMER:
             if (wp == kAnimationTimer) NextFrame();
             return 0;
@@ -665,7 +675,8 @@ HWND CreateMainWindow(HINSTANCE instance) {
     wc.lpszClassName = kAppId;
     if (!RegisterClassExW(&wc)) return nullptr;
 
-    HWND hwnd = CreateWindowExW(0, kAppId, kAppName, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT,
+    // WS_EX_ACCEPTFILES is what DragAcceptFiles sets, without loading shell32 at startup.
+    HWND hwnd = CreateWindowExW(WS_EX_ACCEPTFILES, kAppId, kAppName, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT,
                                 CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, nullptr, nullptr, instance, nullptr);
     if (hwnd) {
         // Dark title bar that blends into the menu bar (caption color is Windows 11 only).

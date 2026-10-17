@@ -1,6 +1,7 @@
 #pragma once
 
 #include <windows.h>
+#include <shellapi.h>
 
 #include "imaging/decoder.h"
 
@@ -9,6 +10,9 @@
 // For a PNG or DIB, name is the file name the clipboard's HTML gives it, else "Pasted image" plus its format.
 // pngBytes is the size of the PNG, or 0 for the others.
 HRESULT ReadClipboardImage(HWND owner, Source& out, std::wstring& name, UINT64& pngBytes);
+
+// The first file dropped on a window, or empty. Read without shell32, which only DragFinish needs.
+std::wstring DroppedFile(HDROP drop);
 
 // Puts an image on the clipboard as PNG and DIB, taking ownership of both. Returns whether it is there.
 bool SetClipboardImage(HWND owner, HGLOBAL png, HGLOBAL dib);

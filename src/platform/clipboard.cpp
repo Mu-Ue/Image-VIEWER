@@ -98,9 +98,8 @@ HRESULT CopyImageData(UINT format, Microsoft::WRL::ComPtr<IStream>& out) {
     return hr;
 }
 
-// Sets path to the first file of a file list copied in Explorer (CF_HDROP).
-HRESULT CopyFirstFile(std::wstring& path) {
-    const HGLOBAL data = GetClipboardData(CF_HDROP);
+// Sets path to the first file of a file list (DROPFILES), as Explorer copies or drops it.
+HRESULT FirstFileOf(HGLOBAL data, std::wstring& path) {
     const BYTE* p = data ? static_cast<const BYTE*>(GlobalLock(data)) : nullptr;
     if (!p) return S_FALSE;
     const SIZE_T size = GlobalSize(data);
@@ -205,11 +204,17 @@ HRESULT ReadClipboardImage(HWND owner, Source& out, std::wstring& name, UINT64& 
         hr = CopyImageData(CF_DIB, out.stream);
         name = L"Pasted image.bmp";
     } else if (IsClipboardFormatAvailable(CF_HDROP)) {
-        hr = CopyFirstFile(out.path);
+        hr = FirstFileOf(GetClipboardData(CF_HDROP), out.path);
     }
     if (hr == S_OK && out.stream) CopyHtmlImageName(name);
     CloseClipboard();
     return hr;
+}
+
+std::wstring DroppedFile(HDROP drop) {
+    std::wstring path;
+    FirstFileOf(HGLOBAL(drop), path);
+    return path;
 }
 
 bool SetClipboardImage(HWND owner, HGLOBAL png, HGLOBAL dib) {
