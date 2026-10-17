@@ -182,15 +182,29 @@ void Pan(float dx, float dy) {
     PresentFrame();
 }
 
-// Shows the next frame of an animated GIF, repainting only the image.
+// Shows the next frame of an animated GIF, repainting only the part of the canvas that changed.
 void NextFrame() {
     Animation& a = g.animation;
     if (a.frames.empty()) return;
+    const Frame& previous = a.frames[a.current];
     a.current = (a.current + 1) % a.frames.size();
     GdiFlush();  // GDI may still be reading the canvas
     SetTimer(g.hwnd, kAnimationTimer, ShowFrame(a, a.current), nullptr);
+
+    RECT changed = a.frames[a.current].rect;
+    if (a.current == 0) {
+        changed = {0, 0, LONG(a.width), LONG(a.height)};
+    } else if (previous.disposal == 2 || previous.disposal == 3) {
+        UnionRect(&changed, &changed, &previous.rect);
+    }
+    if (IsRectEmpty(&changed)) return;
+    // The screen pixels whose image area overlaps the change, as Render scales, plus a pixel of margin.
+    const UINT64 w = UINT64(std::lround(double(g.image.width) * g.zoom));
+    const UINT64 h = UINT64(std::lround(double(g.image.height) * g.zoom));
     const LONG x = g.shownX, y = g.barH + g.shownY;
-    const RECT r{x, y, x + LONG(std::lround(g.imageW * g.zoom)), y + LONG(std::lround(g.imageH * g.zoom))};
+    const RECT r{x + LONG(changed.left * w / a.width) - 1, y + LONG(changed.top * h / a.height) - 1,
+                 x + LONG((changed.right * w + a.width - 1) / a.width) + 1,
+                 y + LONG((changed.bottom * h + a.height - 1) / a.height) + 1};
     InvalidateRect(g.hwnd, &r, FALSE);
 }
 
