@@ -190,11 +190,20 @@ void CopyHtmlImageName(std::wstring& name) {
     GlobalUnlock(data);
 }
 
+// Opens the clipboard, trying a few times: another program, such as a clipboard manager, may hold it for a moment.
+bool OpenClipboardSoon(HWND owner) {
+    for (int attempt = 1;; ++attempt) {
+        if (OpenClipboard(owner)) return true;
+        if (attempt == 5) return false;
+        Sleep(10);
+    }
+}
+
 }  // namespace
 
 HRESULT ReadClipboardImage(HWND owner, Source& out, std::wstring& name, UINT64& pngBytes) {
     pngBytes = 0;
-    if (!OpenClipboard(owner)) return HRESULT_FROM_WIN32(GetLastError());
+    if (!OpenClipboardSoon(owner)) return HRESULT_FROM_WIN32(GetLastError());
     HRESULT hr = S_FALSE;
     if (IsClipboardFormatAvailable(PngFormat())) {
         hr = CopyImageData(PngFormat(), out.stream);
@@ -219,7 +228,7 @@ std::wstring DroppedFile(HDROP drop) {
 
 bool SetClipboardImage(HWND owner, HGLOBAL png, HGLOBAL dib) {
     bool done = false;
-    if (OpenClipboard(owner)) {
+    if (OpenClipboardSoon(owner)) {
         // PNG first: programs take the first format they understand, and it keeps every pixel and alpha.
         if (EmptyClipboard() && SetClipboardData(PngFormat(), png)) {
             png = nullptr;
