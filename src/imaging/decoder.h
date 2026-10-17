@@ -5,6 +5,7 @@
 #include <wrl/client.h>
 
 #include <string>
+#include <vector>
 
 // Where an image comes from: a file, an in-memory copy of pasted data, or a decoded bitmap that holds
 // the exact source pixels (not owned).
@@ -51,6 +52,10 @@ HRESULT OpenSource(IWICImagingFactory* wic, const Source& src, UINT maxSize,
 // Opens the encoded data of a file or pasted source, rewound, and sets format to its container. Fails for a
 // decoded bitmap or data in a format this viewer doesn't open.
 HRESULT OpenEncoded(const Source& src, Microsoft::WRL::ComPtr<IStream>& stream, GUID& format);
+
+// Adds the ICC profiles of src's image to out, if it has any.
+void ReadColorProfiles(IWICImagingFactory* wic, const Source& src,
+                       std::vector<Microsoft::WRL::ComPtr<IWICColorContext>>& out);
 
 struct Animation;
 

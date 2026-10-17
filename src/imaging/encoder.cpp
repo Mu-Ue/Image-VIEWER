@@ -176,9 +176,10 @@ HRESULT ToIndexed(IWICImagingFactory* wic, IWICBitmapSource* source, bool alpha,
     return hr;
 }
 
-// Encodes source into container, keeping its pixel format (bit depth, alpha, palette) where the encoder
-// supports it.
-HRESULT Encode(IWICImagingFactory* wic, IWICBitmapSource* source, IStream* stream, const GUID& container) {
+// Encodes source into container, keeping its pixel format (bit depth, alpha, palette) and color profiles
+// where the encoder supports them.
+HRESULT Encode(IWICImagingFactory* wic, IWICBitmapSource* source, IStream* stream, const GUID& container,
+               const std::vector<ComPtr<IWICColorContext>>& profiles = {}) {
     UINT width = 0, height = 0;
     HRESULT hr = source->GetSize(&width, &height);
     ComPtr<IWICBitmapEncoder> encoder;
@@ -190,6 +191,11 @@ HRESULT Encode(IWICImagingFactory* wic, IWICBitmapSource* source, IStream* strea
     if (SUCCEEDED(hr)) hr = WriteOptions(options.Get(), container);
     if (SUCCEEDED(hr)) hr = frame->Initialize(options.Get());
     if (SUCCEEDED(hr)) hr = frame->SetSize(width, height);
+    if (SUCCEEDED(hr) && !profiles.empty()) {  // without its profile, a wide-gamut image would be read as sRGB
+        std::vector<IWICColorContext*> raw;
+        for (const auto& p : profiles) raw.push_back(p.Get());
+        frame->SetColorContexts(UINT(raw.size()), raw.data());  // formats without profiles fail, harmlessly
+    }
 
     WICPixelFormatGUID sourceFormat{}, format{};
     if (SUCCEEDED(hr)) hr = source->GetPixelFormat(&sourceFormat);
@@ -292,8 +298,10 @@ HRESULT SaveImage(const Source& src, const std::wstring& path) {
             hr = wic.hr;
             ComPtr<IWICBitmapSource> source;
             UINT width = 0, height = 0;
+            std::vector<ComPtr<IWICColorContext>> profiles;
             if (SUCCEEDED(hr)) hr = OpenSource(wic.Get(), src, 0, source, width, height);
-            if (SUCCEEDED(hr)) hr = Encode(wic.Get(), source.Get(), stream.Get(), ContainerFor(path));
+            if (SUCCEEDED(hr)) ReadColorProfiles(wic.Get(), src, profiles);
+            if (SUCCEEDED(hr)) hr = Encode(wic.Get(), source.Get(), stream.Get(), ContainerFor(path), profiles);
         }
     }  // releases the source file, which may be the one replaced
 

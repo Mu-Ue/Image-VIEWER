@@ -401,6 +401,27 @@ HRESULT OpenSource(IWICImagingFactory* wic, const Source& src, UINT maxSize, Com
     return hr;
 }
 
+void ReadColorProfiles(IWICImagingFactory* wic, const Source& src, std::vector<ComPtr<IWICColorContext>>& out) {
+    ComPtr<IWICBitmapDecoder> decoder;
+    ComPtr<IWICBitmapFrameDecode> frame;
+    UINT count = 0;
+    if (src.bitmap || FAILED(OpenDecoder(wic, src, decoder)) || FAILED(GetFrame(wic, decoder.Get(), frame)) ||
+        FAILED(frame->GetColorContexts(0, nullptr, &count)) || count == 0 || count > 16) {
+        return;
+    }
+    std::vector<ComPtr<IWICColorContext>> contexts(count);
+    std::vector<IWICColorContext*> raw(count);
+    for (UINT i = 0; i < count; ++i) {
+        if (FAILED(wic->CreateColorContext(&contexts[i]))) return;
+        raw[i] = contexts[i].Get();
+    }
+    if (FAILED(frame->GetColorContexts(count, raw.data(), &count))) return;
+    for (UINT i = 0; i < count; ++i) {
+        WICColorContextType type;
+        if (SUCCEEDED(contexts[i]->GetType(&type)) && type == WICColorContextProfile) out.push_back(contexts[i]);
+    }
+}
+
 HRESULT DecodeImage(const Source& src, Image& out, Animation* animation) {
     const WicFactory wic;
     HRESULT hr = wic.hr;
