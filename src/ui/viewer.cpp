@@ -187,6 +187,12 @@ void Pan(float dx, float dy) {
 void NextFrame() {
     Animation& a = g.animation;
     if (a.frames.empty()) return;
+    if (a.current + 1 == a.frames.size() && a.plays && ++a.played == a.plays) {
+        // Done: the last frame stays on the canvas, and the frames are no longer needed.
+        KillTimer(g.hwnd, kAnimationTimer);
+        a = {};
+        return;
+    }
     const Frame& previous = a.frames[a.current];
     a.current = (a.current + 1) % a.frames.size();
     GdiFlush();  // GDI may still be reading the canvas

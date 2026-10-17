@@ -27,6 +27,25 @@ UINT ReadUint(IWICMetadataQueryReader* reader, const wchar_t* query, UINT fallba
     return result;
 }
 
+// How many times to play the animation, 0 for ever, like browsers: once without the NETSCAPE2.0 loop
+// extension, else once plus its repeat count, where 0 repeats for ever.
+UINT ReadPlays(IWICMetadataQueryReader* reader) {
+    PROPVARIANT app, data;
+    PropVariantInit(&app);
+    PropVariantInit(&data);
+    UINT plays = 1;
+    if (SUCCEEDED(reader->GetMetadataByName(L"/appext/Application", &app)) && app.vt == (VT_VECTOR | VT_UI1) &&
+        app.caub.cElems == 11 && memcmp(app.caub.pElems, "NETSCAPE2.0", 11) == 0 &&
+        SUCCEEDED(reader->GetMetadataByName(L"/appext/Data", &data)) && data.vt == (VT_VECTOR | VT_UI1) &&
+        data.caub.cElems >= 4 && data.caub.pElems[0] >= 3 && data.caub.pElems[1] == 1) {
+        const UINT repeats = data.caub.pElems[2] | UINT(data.caub.pElems[3]) << 8;
+        plays = repeats ? repeats + 1 : 0;
+    }
+    PropVariantClear(&app);
+    PropVariantClear(&data);
+    return plays;
+}
+
 LONG Width(const RECT& r) { return r.right - r.left; }
 LONG Height(const RECT& r) { return r.bottom - r.top; }
 
@@ -109,6 +128,7 @@ HRESULT ReadAnimation(IWICImagingFactory* wic, IWICBitmapDecoder* decoder, Anima
     out.pixels = std::move(pixels);
     out.saved.resize(saved);
     out.current = 0;
+    out.plays = ReadPlays(reader.Get());
     out.width = width;
     out.height = height;
     return S_OK;

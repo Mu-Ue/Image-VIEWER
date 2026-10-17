@@ -23,6 +23,7 @@ struct Animation {
     Pages<BYTE> pixels;
     std::vector<BYTE> saved;  // the canvas under a disposal 3 frame, 3 bytes per pixel
     size_t current = 0;
+    UINT plays = 0, played = 0;  // times to play (0 for ever), and played to the end so far
     BYTE* bits = nullptr;  // the canvas, owned by the image's bitmap
     UINT width = 0, height = 0, stride = 0;
 };
