@@ -30,6 +30,8 @@ constexpr UINT kDecodedMessage = WM_APP;  // lParam is a finished Decode, which 
 constexpr UINT kFramesMessage = WM_APP + 1;  // lParam is Frames, which the window then owns
 constexpr DWORD kDecoderIdleMs = 10000;  // the decoder thread, and WIC with it, stays this long after an image
 
+struct Decode;
+
 struct Viewer {
     HWND hwnd = nullptr;
     HWND bar = nullptr, status = nullptr;
@@ -60,6 +62,8 @@ struct Viewer {
     POINT dragFrom{};
     bool fullscreen = false;
     WINDOWPLACEMENT placement{sizeof(WINDOWPLACEMENT)};  // of the window before it went fullscreen
+    bool modal = false;  // a save or copy is reading the image shown
+    Decode* held = nullptr;  // decoded meanwhile, to be shown once it is done
 } g;
 
 // Draws the image area where update (in image area coordinates) needs it.
@@ -571,15 +575,47 @@ void Step(int step) {
     StepFrom(g.stepTarget.empty() ? g.source.path : g.stepTarget);
 }
 
+void OnDecoded(Decode* d);
+
+// Runs work on its own COM thread and waits for it like a modal dialog, so a long save or copy never leaves the
+// window blank or "Not Responding": it keeps painting and playing, but takes no input. An image decoded meanwhile
+// is shown afterwards, as work may be reading the bitmap shown. Returns E_ABORT if the window closed meanwhile.
+template <class Work>
+HRESULT RunModal(Work work) {
+    HRESULT hr = E_FAIL;
+    std::thread thread = ComThread(hr, std::move(work));
+    const HANDLE handle = thread.native_handle();
+    g.modal = true;
+    EnableWindow(g.hwnd, FALSE);
+    bool quit = false;
+    while (!quit && MsgWaitForMultipleObjects(1, &handle, FALSE, INFINITE, QS_ALLINPUT) == WAIT_OBJECT_0 + 1) {
+        MSG msg;
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) {
+                PostQuitMessage(int(msg.wParam));
+                quit = true;
+                break;
+            }
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    thread.join();
+    g.modal = false;
+    if (quit) return E_ABORT;
+    EnableWindow(g.hwnd, TRUE);
+    if (GetActiveWindow() == g.hwnd) SetFocus(g.hwnd);  // disabling took the keyboard focus away
+    if (Decode* const d = std::exchange(g.held, nullptr)) OnDecoded(d);
+    return hr;
+}
+
 void SaveAs() {
     if (!g.image.bitmap) return;
     const std::wstring path = RunFileDialog(g.hwnd, L"save", g.name);
     if (path.empty()) return;
-    HRESULT hr;
-    ComThread(hr, [&] { return SaveImage(g.source, path); }).join();
-    if (FAILED(hr)) {
-        std::wstring message = L"Can't save \"" + path + L"\".";
-        if (const std::wstring reason = FileErrorReason(hr); !reason.empty()) message += L"\n\n" + reason;
+    const HRESULT hr = RunModal([src = g.source, &path] { return SaveImage(src, path); });
+    if (FAILED(hr) && hr != E_ABORT) {
+        const std::wstring message = L"Can't save \"" + path + L"\".\n\n" + OrCode(FileErrorReason(hr), hr);
         MessageBoxW(g.hwnd, message.c_str(), kAppName, MB_OK | MB_ICONERROR);
     }
 }
@@ -616,8 +652,12 @@ void ToggleFullscreen() {
 void Copy() {
     if (!g.image.bitmap) return;
     HGLOBAL png = nullptr, dib = nullptr;
-    HRESULT hr;
-    ComThread(hr, [&] { return EncodeClipboardImage(g.source, png, dib); }).join();
+    const HRESULT hr = RunModal([src = g.source, &png, &dib] { return EncodeClipboardImage(src, png, dib); });
+    if (hr == E_ABORT) {
+        if (png) GlobalFree(png);
+        if (dib) GlobalFree(dib);
+        return;
+    }
     if (FAILED(hr) || !SetClipboardImage(g.hwnd, png, dib)) {
         MessageBoxW(g.hwnd, L"Can't copy the image.", kAppName, MB_OK | MB_ICONERROR);
     }
@@ -647,6 +687,11 @@ void Paste() {
 // Shows a decoded image, or what went wrong, unless a newer request replaced it.
 void OnDecoded(Decode* d) {
     if (d->id != worker.latest) return Discard(d);
+    if (g.modal) {
+        if (g.held) Discard(g.held);
+        g.held = d;
+        return;
+    }
     if (FAILED(d->hr)) {
         const Ask ask = d->ask;
         const HRESULT hr = d->hr;
