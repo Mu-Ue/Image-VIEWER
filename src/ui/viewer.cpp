@@ -270,14 +270,19 @@ void OnSize(float width, float height) {
     InvalidateRect(g.hwnd, nullptr, FALSE);
 }
 
-// Sizes the window to the image (capped to the work area), or a default size when empty,
-// and centers it on the active monitor.
-void PlaceWindow() {
+// The work area of the monitor the cursor is on, where the window opens.
+RECT ActiveWorkArea() {
     POINT cursor;
     GetCursorPos(&cursor);
     MONITORINFO mi{sizeof(mi)};
     GetMonitorInfoW(MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST), &mi);
-    const RECT& work = mi.rcWork;
+    return mi.rcWork;
+}
+
+// Sizes the window to the image (capped to the work area), or a default size when empty,
+// and centers it on the active monitor.
+void PlaceWindow() {
+    const RECT work = ActiveWorkArea();
     const float workW = float(work.right - work.left), workH = float(work.bottom - work.top);
 
     const UINT dpi = GetDpiForWindow(g.hwnd);
@@ -974,10 +979,12 @@ HWND CreateMainWindow(HINSTANCE instance) {
     wc.lpszClassName = kAppId;
     if (!RegisterClassExW(&wc)) return nullptr;
 
-    // WS_EX_ACCEPTFILES is what DragAcceptFiles sets, without loading shell32 at startup.
+    // WS_EX_ACCEPTFILES is what DragAcceptFiles sets, without loading shell32 at startup. Created on the monitor
+    // it opens on, so it has that monitor's DPI when PlaceWindow sizes it.
     LoadTheme();
-    HWND hwnd = CreateWindowExW(WS_EX_ACCEPTFILES, kAppId, kAppName, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT,
-                                CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, nullptr, nullptr, instance, nullptr);
+    const RECT work = ActiveWorkArea();
+    HWND hwnd = CreateWindowExW(WS_EX_ACCEPTFILES, kAppId, kAppName, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, work.left,
+                                work.top, 100, 100, nullptr, nullptr, instance, nullptr);
     if (hwnd) ThemeFrame(hwnd);
     return hwnd;
 }
