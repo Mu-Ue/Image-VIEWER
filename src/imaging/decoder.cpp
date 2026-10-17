@@ -406,14 +406,12 @@ HRESULT OpenSource(IWICImagingFactory* wic, const Source& src, UINT maxSize, Com
     return hr;
 }
 
-void ReadColorProfiles(IWICImagingFactory* wic, const Source& src, std::vector<ComPtr<IWICColorContext>>& out) {
-    ComPtr<IWICBitmapDecoder> decoder;
-    ComPtr<IWICBitmapFrameDecode> frame;
+namespace {
+
+// Adds the ICC profiles of a decoded frame to out.
+void FrameProfiles(IWICImagingFactory* wic, IWICBitmapFrameDecode* frame, std::vector<ComPtr<IWICColorContext>>& out) {
     UINT count = 0;
-    if (src.bitmap || FAILED(OpenDecoder(wic, src, decoder)) || FAILED(GetFrame(wic, decoder.Get(), frame)) ||
-        FAILED(frame->GetColorContexts(0, nullptr, &count)) || count == 0 || count > 16) {
-        return;
-    }
+    if (FAILED(frame->GetColorContexts(0, nullptr, &count)) || count == 0 || count > 16) return;
     std::vector<ComPtr<IWICColorContext>> contexts(count);
     std::vector<IWICColorContext*> raw(count);
     for (UINT i = 0; i < count; ++i) {
@@ -424,6 +422,24 @@ void ReadColorProfiles(IWICImagingFactory* wic, const Source& src, std::vector<C
     for (UINT i = 0; i < count; ++i) {
         WICColorContextType type;
         if (SUCCEEDED(contexts[i]->GetType(&type)) && type == WICColorContextProfile) out.push_back(contexts[i]);
+    }
+}
+
+// Whether source is a decoded frame with an ICC profile, which a bitmap of its pixels would lose.
+bool HasColorProfile(IWICImagingFactory* wic, IWICBitmapSource* source) {
+    ComPtr<IWICBitmapFrameDecode> frame;
+    std::vector<ComPtr<IWICColorContext>> profiles;
+    if (SUCCEEDED(source->QueryInterface(IID_PPV_ARGS(&frame)))) FrameProfiles(wic, frame.Get(), profiles);
+    return !profiles.empty();
+}
+
+}  // namespace
+
+void ReadColorProfiles(IWICImagingFactory* wic, const Source& src, std::vector<ComPtr<IWICColorContext>>& out) {
+    ComPtr<IWICBitmapDecoder> decoder;
+    ComPtr<IWICBitmapFrameDecode> frame;
+    if (!src.bitmap && SUCCEEDED(OpenDecoder(wic, src, decoder)) && SUCCEEDED(GetFrame(wic, decoder.Get(), frame))) {
+        FrameProfiles(wic, frame.Get(), out);
     }
 }
 
@@ -601,7 +617,8 @@ HRESULT DecodeImage(const Source& src, Image& out, bool* animated) {
     out.height = outH;
     out.fullWidth = UINT(sideways ? full.cy : full.cx);
     out.fullHeight = UINT(sideways ? full.cx : full.cy);
-    out.exact = alpha == 255 && UINT(full.cx) == width && UINT(full.cy) == height && Is8BitColor(format);
+    out.exact = alpha == 255 && UINT(full.cx) == width && UINT(full.cy) == height && Is8BitColor(format) &&
+                !HasColorProfile(wic.Get(), source.Get());
     return S_OK;
 }
 
