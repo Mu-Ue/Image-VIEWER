@@ -146,6 +146,7 @@ void ZoomAt(float zoom, float x, float y) {
     if (!g.image.bitmap) return;
     const float fitZoom = FitZoom();
     zoom = std::clamp(zoom, fitZoom, std::max(kMaxZoom, fitZoom));
+    if ((g.zoom < 1.0f && zoom > 1.0f) || (g.zoom > 1.0f && zoom < 1.0f)) zoom = 1.0f;  // stop at actual size
     if (zoom == g.zoom) return;
     g.offsetX = x - (x - g.offsetX) * (zoom / g.zoom);
     g.offsetY = y - (y - g.offsetY) * (zoom / g.zoom);
