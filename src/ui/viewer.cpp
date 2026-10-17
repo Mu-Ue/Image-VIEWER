@@ -47,6 +47,7 @@ struct Viewer {
     Animation animation;  // of an animated GIF, drawn into image.bitmap
     bool awaitingFrames = false;  // the image is an animated GIF whose frames are still being read
     bool paused = false;  // the animation, while the window is minimized
+    LONGLONG frameDue = 0;  // when the animation's next frame is due, in performance counter ticks
     UINT64 shownId = 0;  // of the request whose image is shown
     HDC imageDC = nullptr;  // memory DC holding image.bitmap
     HBRUSH background = nullptr;
@@ -205,6 +206,20 @@ void Pan(float dx, float dy) {
     PresentFrame();
 }
 
+// Shows the animation's next frame delay ms after the last one was due, or from now to start over. Timers
+// fire on the system's coarse ticks, so timing each frame from when it was shown would play slower than
+// the file asks; from when it was due, the ticks even out.
+void ScheduleFrame(UINT delay, bool restart) {
+    LARGE_INTEGER now, freq;
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&freq);
+    const LONGLONG step = freq.QuadPart * delay / 1000;
+    if (restart || g.frameDue + step < now.QuadPart) g.frameDue = now.QuadPart;  // or more than a frame behind
+    g.frameDue += step;
+    const LONGLONG ms = (g.frameDue - now.QuadPart) * 1000 / freq.QuadPart;
+    SetTimer(g.hwnd, kAnimationTimer, UINT(std::max(ms, 0LL)), nullptr);
+}
+
 // Shows the next frame of an animated GIF, repainting only the part of the canvas that changed.
 void NextFrame() {
     Animation& a = g.animation;
@@ -218,7 +233,7 @@ void NextFrame() {
     const Frame& previous = a.frames[a.current];
     a.current = (a.current + 1) % a.frames.size();
     GdiFlush();  // GDI may still be reading the canvas
-    SetTimer(g.hwnd, kAnimationTimer, ShowFrame(a, a.current), nullptr);
+    ScheduleFrame(ShowFrame(a, a.current), false);
 
     RECT changed = a.frames[a.current].rect;
     if (a.current == 0) {
@@ -742,7 +757,7 @@ void OnFrames(Frames* f) {
         if (IsIconic(g.hwnd)) {
             g.paused = true;
         } else {
-            SetTimer(g.hwnd, kAnimationTimer, g.animation.frames[0].delay, nullptr);
+            ScheduleFrame(g.animation.frames[0].delay, true);
         }
     }
     delete f;
@@ -818,7 +833,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 g.paused = true;
             } else if (wp != SIZE_MINIMIZED && g.paused) {
                 g.paused = false;
-                SetTimer(hwnd, kAnimationTimer, g.animation.frames[g.animation.current].delay, nullptr);
+                ScheduleFrame(g.animation.frames[g.animation.current].delay, true);
             }
             MoveWindow(g.bar, 0, 0, LOWORD(lp), g.barH, TRUE);
             MoveWindow(g.status, 0, HIWORD(lp) - g.statusH, LOWORD(lp), g.statusH, TRUE);
