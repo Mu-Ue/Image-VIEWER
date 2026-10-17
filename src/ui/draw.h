@@ -4,7 +4,30 @@
 
 #include <cwchar>
 
+#include "config.h"
+
 // Drawing shared by the menu bar and the status bar, so both look the same.
+
+// Colors of the bars and menus: Windows' dark gray, or the system colors while High Contrast is on.
+struct Theme {
+    bool highContrast = false;
+    COLORREF chrome = kChrome, hover = kChromeHover, pressed = kChromePressed, line = kChromePressed;
+    COLORREF text = kChromeText, hotText = kChromeText, disabledText = kChromeTextDisabled;
+};
+
+inline Theme theme;
+
+// Reads the current theme; call again when the system colors or High Contrast change.
+inline void LoadTheme() {
+    HIGHCONTRASTW hc{sizeof(hc)};
+    if (SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(hc), &hc, 0) && (hc.dwFlags & HCF_HIGHCONTRASTON)) {
+        const COLORREF highlight = GetSysColor(COLOR_HIGHLIGHT);
+        theme = {true, GetSysColor(COLOR_WINDOW), highlight, highlight, GetSysColor(COLOR_WINDOWTEXT),
+                 GetSysColor(COLOR_WINDOWTEXT), GetSysColor(COLOR_HIGHLIGHTTEXT), GetSysColor(COLOR_GRAYTEXT)};
+    } else {
+        theme = {};
+    }
+}
 
 inline void FillRounded(HDC dc, const RECT& r, COLORREF color, int radius) {
     SetDCBrushColor(dc, color);

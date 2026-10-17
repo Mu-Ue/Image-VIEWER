@@ -35,10 +35,10 @@ std::span<const std::wstring> Shown() {
 void Paint(HDC dc) {
     RECT client;
     GetClientRect(status.hwnd, &client);
-    FillSolid(dc, client, kChrome);
+    FillSolid(dc, client, theme.chrome);
     SetBkMode(dc, TRANSPARENT);
     SelectObject(dc, status.font);
-    SetTextColor(dc, kChromeText);
+    SetTextColor(dc, theme.text);
     const int y = (status.height - status.textH) / 2;
 
     // Fields on the left, split by 1px lines a gap away from the text on each side, or the message instead.
@@ -47,7 +47,7 @@ void Paint(HDC dc) {
     for (const std::wstring& field : Shown()) {
         if (field.empty()) continue;
         if (!first) {
-            FillSolid(dc, {x, y, x + 1, y + status.textH}, kChromePressed);
+            FillSolid(dc, {x, y, x + 1, y + status.textH}, theme.line);
             x += 1 + status.gap;
         }
         first = false;
@@ -58,12 +58,11 @@ void Paint(HDC dc) {
     }
 
     SelectObject(dc, status.icons);
-    SetTextColor(dc, status.enabled ? kChromeText : kChromeTextDisabled);
     for (int i = 0; i < 2; ++i) {
         const RECT& r = status.buttons[i];
-        if (status.enabled && (i == status.pressed || i == status.hot)) {
-            FillRounded(dc, r, i == status.pressed ? kChromePressed : kChromeHover, status.height / 4);
-        }
+        const bool lit = status.enabled && (i == status.pressed || i == status.hot);
+        if (lit) FillRounded(dc, r, i == status.pressed ? theme.pressed : theme.hover, status.height / 4);
+        SetTextColor(dc, !status.enabled ? theme.disabledText : lit ? theme.hotText : theme.text);
         SIZE size;
         GetTextExtentPoint32W(dc, kChevrons[i], 1, &size);
         Text(dc, r.left + (r.right - r.left - size.cx) / 2, r.top + (r.bottom - r.top - status.iconH) / 2,

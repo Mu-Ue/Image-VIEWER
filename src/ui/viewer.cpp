@@ -14,6 +14,7 @@
 #include "imaging/encoder.h"
 #include "platform/clipboard.h"
 #include "platform/file_dialog.h"
+#include "ui/draw.h"
 #include "ui/menu_bar.h"
 #include "ui/scale.h"
 #include "ui/status_bar.h"
@@ -510,6 +511,23 @@ void RunCommand(UINT cmd) {
     }
 }
 
+// A dark title bar that blends into the menu bar (its color is Windows 11 only), or the system's own in
+// High Contrast.
+void ThemeFrame(HWND hwnd) {
+    const BOOL dark = !theme.highContrast;
+    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+    const COLORREF caption = theme.highContrast ? DWMWA_COLOR_DEFAULT : kChrome;
+    DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &caption, sizeof(caption));
+}
+
+// Follows High Contrast and system color changes in the frame, bars and menus.
+void OnThemeChanged(HWND hwnd) {
+    LoadTheme();
+    ThemeFrame(hwnd);
+    LayoutMenuBar(GetDpiForWindow(hwnd));  // rebuilds the menus in the new colors
+    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_CREATE: {
@@ -657,6 +675,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                          SWP_NOZORDER | SWP_NOACTIVATE);
             return 0;
         }
+        case WM_SETTINGCHANGE:
+            if (wp == SPI_SETHIGHCONTRAST) OnThemeChanged(hwnd);
+            break;
+        case WM_SYSCOLORCHANGE:
+            OnThemeChanged(hwnd);
+            return 0;
         case WM_DESTROY:
             PostQuitMessage(0);
             return 0;
@@ -676,15 +700,10 @@ HWND CreateMainWindow(HINSTANCE instance) {
     if (!RegisterClassExW(&wc)) return nullptr;
 
     // WS_EX_ACCEPTFILES is what DragAcceptFiles sets, without loading shell32 at startup.
+    LoadTheme();
     HWND hwnd = CreateWindowExW(WS_EX_ACCEPTFILES, kAppId, kAppName, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT,
                                 CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, nullptr, nullptr, instance, nullptr);
-    if (hwnd) {
-        // Dark title bar that blends into the menu bar (caption color is Windows 11 only).
-        const BOOL dark = TRUE;
-        DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
-        const COLORREF caption = kChrome;
-        DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &caption, sizeof(caption));
-    }
+    if (hwnd) ThemeFrame(hwnd);
     return hwnd;
 }
 

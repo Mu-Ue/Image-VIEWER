@@ -75,8 +75,10 @@ bool IsEnabled(UINT cmd) {
     }
 }
 
-// Rebuilds the popups, so Windows measures their owner-drawn items again for the current font.
+// Rebuilds the popups, so Windows measures their owner-drawn items again for the current font and colors.
 void BuildMenus() {
+    if (bar.menuBrush) DeleteObject(bar.menuBrush);
+    bar.menuBrush = CreateSolidBrush(theme.chrome);
     for (Menu& m : bar.menus) {
         if (m.menu) DestroyMenu(m.menu);
         m.menu = CreatePopupMenu();
@@ -114,17 +116,15 @@ const Menu* MenuOf(const Item* item) {
 void Paint(HDC dc) {
     RECT client;
     GetClientRect(bar.hwnd, &client);
-    SetDCBrushColor(dc, kChrome);
-    FillRect(dc, &client, HBRUSH(GetStockObject(DC_BRUSH)));
+    FillSolid(dc, client, theme.chrome);
     SelectObject(dc, bar.font);
     SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, kChromeText);
     for (int i = 0; i < int(std::size(bar.menus)); ++i) {
         const Menu& m = bar.menus[i];
         const RECT& r = m.button;
-        if (i == bar.open || i == bar.hot) {
-            FillRounded(dc, r, i == bar.open ? kChromePressed : kChromeHover, bar.height / 4);
-        }
+        const bool lit = i == bar.open || i == bar.hot;
+        if (lit) FillRounded(dc, r, i == bar.open ? theme.pressed : theme.hover, bar.height / 4);
+        SetTextColor(dc, lit ? theme.hotText : theme.text);
         Text(dc, r.left + (r.right - r.left - m.text.cx) / 2, r.top + (r.bottom - r.top - m.text.cy) / 2, m.label);
     }
 }
@@ -133,21 +133,21 @@ void DrawItem(const DRAWITEMSTRUCT& d) {
     const HDC dc = d.hDC;
     const RECT& r = d.rcItem;
     const int saved = SaveDC(dc);
-    SetDCBrushColor(dc, kChrome);
-    FillRect(dc, &r, HBRUSH(GetStockObject(DC_BRUSH)));
+    FillSolid(dc, r, theme.chrome);
     const Item* item = reinterpret_cast<const Item*>(d.itemData);
     if (!item->cmd) {
         const int y = (r.top + r.bottom) / 2;
-        const RECT line{r.left + bar.inset, y, r.right - bar.inset, y + 1};
-        SetDCBrushColor(dc, kChromePressed);
-        FillRect(dc, &line, HBRUSH(GetStockObject(DC_BRUSH)));
+        FillSolid(dc, {r.left + bar.inset, y, r.right - bar.inset, y + 1}, theme.line);
     } else {
-        if (d.itemState & ODS_SELECTED) {
-            FillRounded(dc, {r.left + bar.inset, r.top, r.right - bar.inset, r.bottom}, kChromeHover, bar.height / 4);
+        const bool selected = d.itemState & ODS_SELECTED;
+        if (selected) {
+            FillRounded(dc, {r.left + bar.inset, r.top, r.right - bar.inset, r.bottom}, theme.hover, bar.height / 4);
         }
         SelectObject(dc, bar.font);
         SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, d.itemState & (ODS_GRAYED | ODS_DISABLED) ? kChromeTextDisabled : kChromeText);
+        SetTextColor(dc, d.itemState & (ODS_GRAYED | ODS_DISABLED) ? theme.disabledText
+                         : selected                               ? theme.hotText
+                                                                  : theme.text);
         const int x = r.left + bar.padX, y = (r.top + r.bottom - bar.textH) / 2;
         Text(dc, x, y, item->label);
         Text(dc, x + MenuOf(item)->labelW + bar.gap, y, item->shortcut);
@@ -163,7 +163,7 @@ LRESULT CALLBACK PopupProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_CREATE) {
         const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
         DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
-        const COLORREF border = kChromePressed;
+        const COLORREF border = theme.line;
         DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &border, sizeof(border));
     }
     if (msg == WM_NCPAINT) {
@@ -171,8 +171,7 @@ LRESULT CALLBACK PopupProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         GetWindowRect(hwnd, &r);
         OffsetRect(&r, -r.left, -r.top);
         HDC dc = GetWindowDC(hwnd);
-        SetDCBrushColor(dc, kChrome);
-        FillRect(dc, &r, HBRUSH(GetStockObject(DC_BRUSH)));
+        FillSolid(dc, r, theme.chrome);
         ReleaseDC(hwnd, dc);
         return 0;
     }
@@ -260,7 +259,6 @@ HWND CreateMenuBar(HWND parent, HINSTANCE instance) {
     wc.lpszClassName = kClassName;
     if (!RegisterClassExW(&wc)) return nullptr;
 
-    bar.menuBrush = CreateSolidBrush(kChrome);
     bar.parent = parent;
     LayoutMenuBar(GetDpiForWindow(parent));
     bar.hwnd = CreateWindowExW(0, kClassName, nullptr, WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, parent, nullptr,
