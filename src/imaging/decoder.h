@@ -18,6 +18,7 @@ struct Image {
     HBITMAP bitmap = nullptr;  // 24bpp or palettized top-down DIB section, composited over kBackground
     UINT width = 0;
     UINT height = 0;
+    UINT fullWidth = 0, fullHeight = 0;  // upright size of the source, which is larger if it was scaled down
     bool exact = false;  // the bitmap holds every source pixel unchanged, so it can stand in for the source
 };
 
@@ -41,11 +42,11 @@ private:
 };
 
 // Opens the upright image: the chosen frame, scaled to fit maxSize (0 = no limit), EXIF orientation applied.
-// scaled, if given, is set to whether it had to be scaled down. If orientation is given, it is set to the
+// full, if given, is set to the stored size before scaling. If orientation is given, it is set to the
 // EXIF orientation (1-8) instead of applying it, and width and height are those of the stored pixels.
 HRESULT OpenSource(IWICImagingFactory* wic, const Source& src, UINT maxSize,
                    Microsoft::WRL::ComPtr<IWICBitmapSource>& source, UINT& width, UINT& height,
-                   bool* scaled = nullptr, int* orientation = nullptr);
+                   SIZE* full = nullptr, int* orientation = nullptr);
 
 // Opens the encoded data of a file or pasted source, rewound, and sets format to its container. Fails for a
 // decoded bitmap or data in a format this viewer doesn't open.

@@ -122,8 +122,10 @@ void ShowOffset() {
     g.shownY = int(std::round(g.offsetY));
 }
 
+// The zoom is shown relative to the source, which is larger than the bitmap if it was scaled down.
 void UpdateStatus() {
-    SetStatus(g.resolution, g.size, g.image.bitmap ? std::lround(g.zoom * 100) : -1);
+    const double percent = g.image.bitmap ? double(g.zoom) * 100 * g.image.width / g.image.fullWidth : -1;
+    SetStatus(g.resolution, g.size, std::lround(percent));
 }
 
 // Formats a byte count like Explorer does, in 1024-based units with one decimal above KB.
@@ -268,7 +270,7 @@ void SetImage(const Image& image, std::wstring name, UINT64 bytes = 0, Animation
     g.name = std::move(name);
     g.imageW = float(image.width);
     g.imageH = float(image.height);
-    g.resolution = std::to_wstring(image.width) + L" × " + std::to_wstring(image.height);
+    g.resolution = std::to_wstring(image.fullWidth) + L" × " + std::to_wstring(image.fullHeight);
     WIN32_FILE_ATTRIBUTE_DATA file;
     if (!g.source.path.empty() && GetFileAttributesExW(g.source.path.c_str(), GetFileExInfoStandard, &file)) {
         bytes = UINT64(file.nFileSizeHigh) << 32 | file.nFileSizeLow;

@@ -292,8 +292,8 @@ HRESULT DecodeAnimation(IWICImagingFactory* wic, IWICBitmapDecoder* decoder, Ima
     a.stride = (a.width * 3 + 3) & ~3u;
     ShowFrame(a, 0);
     out.bitmap = bitmap;
-    out.width = a.width;
-    out.height = a.height;
+    out.width = out.fullWidth = a.width;
+    out.height = out.fullHeight = a.height;
     out.exact = false;  // the canvas changes as it plays
     animation = std::move(a);
     return S_OK;
@@ -323,8 +323,7 @@ namespace {
 
 // OpenSource for a source that isn't a bitmap, once its decoder is made.
 HRESULT OpenDecoded(IWICImagingFactory* wic, IWICBitmapDecoder* decoder, UINT maxSize,
-                    ComPtr<IWICBitmapSource>& source, UINT& width, UINT& height, bool* scaled, int* orientation) {
-    if (scaled) *scaled = false;
+                    ComPtr<IWICBitmapSource>& source, UINT& width, UINT& height, SIZE* full, int* orientation) {
     if (orientation) *orientation = 1;
     ComPtr<IWICBitmapFrameDecode> frame;
     HRESULT hr = GetFrame(wic, decoder, frame);
@@ -332,11 +331,10 @@ HRESULT OpenDecoded(IWICImagingFactory* wic, IWICBitmapDecoder* decoder, UINT ma
     if (FAILED(hr)) return hr;
     if (width == 0 || height == 0) return WINCODEC_ERR_BADIMAGE;
     if (UINT64(width) * height > kMaxSourcePixels) return WINCODEC_ERR_IMAGESIZEOUTOFRANGE;
+    if (full) *full = {LONG(width), LONG(height)};
 
     source = frame;
-    const bool scale = maxSize && (width > maxSize || height > maxSize);
-    if (scaled) *scaled = scale;
-    if (scale) {
+    if (maxSize && (width > maxSize || height > maxSize)) {
         // Scaling at the decoder lets codecs like JPEG decode at reduced size directly.
         const double factor = double(maxSize) / std::max(width, height);
         width = std::max(1u, UINT(width * factor));
@@ -387,19 +385,19 @@ HRESULT OpenEncoded(const Source& src, ComPtr<IStream>& stream, GUID& format) {
 }
 
 HRESULT OpenSource(IWICImagingFactory* wic, const Source& src, UINT maxSize, ComPtr<IWICBitmapSource>& source,
-                   UINT& width, UINT& height, bool* scaled, int* orientation) {
+                   UINT& width, UINT& height, SIZE* full, int* orientation) {
     if (src.bitmap) {
-        if (scaled) *scaled = false;
         if (orientation) *orientation = 1;
         ComPtr<IWICBitmap> bitmap;
         HRESULT hr = wic->CreateBitmapFromHBITMAP(src.bitmap, nullptr, WICBitmapIgnoreAlpha, &bitmap);
         if (SUCCEEDED(hr)) hr = bitmap->GetSize(&width, &height);
         if (SUCCEEDED(hr)) source = bitmap;
+        if (full) *full = {LONG(width), LONG(height)};
         return hr;
     }
     ComPtr<IWICBitmapDecoder> decoder;
     HRESULT hr = OpenDecoder(wic, src, decoder);
-    if (SUCCEEDED(hr)) hr = OpenDecoded(wic, decoder.Get(), maxSize, source, width, height, scaled, orientation);
+    if (SUCCEEDED(hr)) hr = OpenDecoded(wic, decoder.Get(), maxSize, source, width, height, full, orientation);
     return hr;
 }
 
@@ -409,10 +407,10 @@ HRESULT DecodeImage(const Source& src, Image& out, Animation* animation) {
     if (FAILED(hr)) return hr;
     ComPtr<IWICBitmapSource> source;
     UINT width = 0, height = 0;  // of the source, before orientation is applied
-    bool scaled = false;
+    SIZE full{};  // the same, before scaling down
     int orientation = 1;
     if (src.bitmap) {
-        hr = OpenSource(wic.Get(), src, kMaxBitmapSize, source, width, height, &scaled, &orientation);
+        hr = OpenSource(wic.Get(), src, kMaxBitmapSize, source, width, height, &full, &orientation);
     } else {
         ComPtr<IWICBitmapDecoder> decoder;
         hr = OpenDecoder(wic.Get(), src, decoder);
@@ -420,7 +418,7 @@ HRESULT DecodeImage(const Source& src, Image& out, Animation* animation) {
             return S_OK;
         }
         if (SUCCEEDED(hr)) {
-            hr = OpenDecoded(wic.Get(), decoder.Get(), kMaxBitmapSize, source, width, height, &scaled, &orientation);
+            hr = OpenDecoded(wic.Get(), decoder.Get(), kMaxBitmapSize, source, width, height, &full, &orientation);
         }
     }
     if (FAILED(hr)) return hr;
@@ -560,7 +558,9 @@ HRESULT DecodeImage(const Source& src, Image& out, Animation* animation) {
     out.bitmap = bitmap;
     out.width = outW;
     out.height = outH;
-    out.exact = alpha == 255 && !scaled && Is8BitColor(format);
+    out.fullWidth = UINT(sideways ? full.cy : full.cx);
+    out.fullHeight = UINT(sideways ? full.cx : full.cy);
+    out.exact = alpha == 255 && UINT(full.cx) == width && UINT(full.cy) == height && Is8BitColor(format);
     return S_OK;
 }
 
