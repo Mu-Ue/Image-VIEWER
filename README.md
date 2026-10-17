@@ -17,6 +17,8 @@ cmake --build build
 
 This produces `build\ImageVIEWER.exe`, a single file with no dependencies.
 
+To check that images are shown and saved exactly, run `cmake --build build --target tests`, then `build\tests.exe`.
+
 ## Use
 
 ```
@@ -32,7 +34,7 @@ ImageVIEWER.exe [photo.jpg]
 | `0` / `1`                | Fit / 100%                |
 | `←` / `→`                | Previous / next image     |
 | `F11`                    | Fullscreen                |
-| `Ctrl+O`                 | Open                      |
+| `Ctrl+O` / drop a file   | Open                      |
 | `Ctrl+C`                 | Copy image                |
 | `Ctrl+V`                 | Paste image or image file |
 | `Ctrl+S`                 | Save as                   |
