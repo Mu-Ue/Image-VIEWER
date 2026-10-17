@@ -9,9 +9,11 @@ using Microsoft::WRL::ComPtr;
 
 namespace {
 
-// Creates a new, empty file next to path to write into, never reusing an existing one.
+// Creates a new, empty file next to path to write into, never reusing an existing one. Its name is short, so it
+// fits even where path's own name is as long as names can be.
 HANDLE CreateTempFile(const std::wstring& path) {
-    const std::wstring prefix = path + L"." + std::to_wstring(GetCurrentProcessId()) + L".";
+    const std::wstring prefix = path.substr(0, path.find_last_of(L"\\/") + 1) + L"~ImageVIEWER." +
+                                std::to_wstring(GetCurrentProcessId()) + L".";
     for (UINT i = 0; i < 100; ++i) {
         const std::wstring temp = prefix + std::to_wstring(i) + L".tmp";
         const HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE | DELETE, 0, nullptr, CREATE_NEW,
