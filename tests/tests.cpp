@@ -5,6 +5,8 @@
 #include <wrl/client.h>
 
 #include <cstdio>
+#include <cstring>
+#include <iterator>
 #include <random>
 #include <string>
 #include <vector>
@@ -116,9 +118,11 @@ std::wstring TempPath(const wchar_t* name) {
     return std::wstring(dir) + L"ImageVIEWER-tests-" + std::to_wstring(GetCurrentProcessId()) + L"-" + name;
 }
 
-// Writes an image of random pixels in the given container and pixel format, with an EXIF orientation.
+// Writes an image of random pixels in the given container and pixel format, with an EXIF orientation. For 24bpp,
+// the first fewColorRows rows use only fewColors colors. profile, if given, is embedded.
 HRESULT WriteImage(IWICImagingFactory* wic, const std::wstring& path, const GUID& container, WICPixelFormatGUID format,
-                   UINT w, UINT h, int orientation, std::mt19937& rng) {
+                   UINT w, UINT h, int orientation, std::mt19937& rng, UINT fewColorRows = 0, UINT fewColors = 200,
+                   IWICColorContext* profile = nullptr) {
     ComPtr<IWICStream> stream;
     ComPtr<IWICBitmapEncoder> encoder;
     ComPtr<IWICBitmapFrameEncode> frame;
@@ -131,6 +135,7 @@ HRESULT WriteImage(IWICImagingFactory* wic, const std::wstring& path, const GUID
     if (SUCCEEDED(hr)) hr = frame->Initialize(nullptr);
     if (SUCCEEDED(hr)) hr = frame->SetSize(w, h);
     if (SUCCEEDED(hr)) hr = frame->SetPixelFormat(&format);
+    if (SUCCEEDED(hr) && profile) hr = frame->SetColorContexts(1, &profile);
     const bool indexed = format == GUID_WICPixelFormat8bppIndexed;
     if (SUCCEEDED(hr) && indexed) {
         ComPtr<IWICPalette> palette;
@@ -152,8 +157,15 @@ HRESULT WriteImage(IWICImagingFactory* wic, const std::wstring& path, const GUID
     const UINT bpp = indexed ? 8 : format == GUID_WICPixelFormat32bppBGRA ? 32 : 24;
     const UINT stride = (w * bpp / 8 + 3) & ~3u;
     std::vector<BYTE> pixels(size_t(stride) * h);
+    std::vector<UINT32> few(fewColorRows ? fewColors : 0);
+    for (UINT32& c : few) c = rng() & 0xFFFFFF;
     for (UINT y = 0; y < h; ++y) {
-        for (UINT x = 0; x < w * bpp / 8; ++x) pixels[size_t(y) * stride + x] = BYTE(indexed ? rng() % 200 : rng());
+        BYTE* const row = pixels.data() + size_t(y) * stride;
+        if (y < fewColorRows) {
+            for (UINT x = 0; x < w; ++x) memcpy(row + x * 3, &few[rng() % fewColors], 3);
+        } else {
+            for (UINT x = 0; x < w * bpp / 8; ++x) row[x] = BYTE(indexed ? rng() % 200 : rng());
+        }
     }
     if (SUCCEEDED(hr)) hr = frame->WritePixels(h, stride, UINT(pixels.size()), pixels.data());
     if (SUCCEEDED(hr)) hr = frame->Commit();
@@ -193,20 +205,27 @@ std::vector<BYTE> WicUpright(IWICImagingFactory* wic, const std::wstring& path, 
     return pixels;
 }
 
-// DecodeImage applies every EXIF orientation like WIC does, on its 24bpp and palette paths.
+// DecodeImage applies every EXIF orientation like WIC does, on its 24bpp and palette paths, and when it switches
+// from one to the other partway through.
 void TestOrientation(IWICImagingFactory* wic) {
     std::mt19937 rng(3);
     struct {
         const GUID& container;
         WICPixelFormatGUID format;
         const wchar_t* ext;
-    } kinds[] = {{GUID_ContainerFormatJpeg, GUID_WICPixelFormat24bppBGR, L".jpg"},
-                 {GUID_ContainerFormatTiff, GUID_WICPixelFormat8bppIndexed, L".tif"}};
-    for (const auto& kind : kinds) {
+        UINT h, fewColorRows;
+    } kinds[] = {{GUID_ContainerFormatJpeg, GUID_WICPixelFormat24bppBGR, L".jpg", 97, 0},
+                 {GUID_ContainerFormatTiff, GUID_WICPixelFormat8bppIndexed, L".tif", 97, 0},
+                 // Decoded in strips of 1747 rows, so the colors run out in the second one.
+                 {GUID_ContainerFormatTiff, GUID_WICPixelFormat24bppBGR, L".tif", 4000, 2000}};
+    for (int k = 0; k < int(std::size(kinds)); ++k) {
+        const auto& kind = kinds[k];
         for (int orientation = 1; orientation <= 8; ++orientation) {
-            const std::wstring path = TempPath((L"orientation" + std::to_wstring(orientation) + kind.ext).c_str());
+            const std::wstring path =
+                TempPath((L"orientation" + std::to_wstring(k) + L"-" + std::to_wstring(orientation) + kind.ext).c_str());
             // Wider than the 64-pixel tiles sideways images are written in, and odd-sized.
-            if (FAILED(WriteImage(wic, path, kind.container, kind.format, 150, 97, orientation, rng))) {
+            if (FAILED(WriteImage(wic, path, kind.container, kind.format, 150, kind.h, orientation, rng,
+                                  kind.fewColorRows))) {
                 Fail("can't write an orientation test image", orientation);
                 continue;
             }
@@ -282,6 +301,57 @@ void TestSave(IWICImagingFactory* wic) {
     for (const std::wstring& path : {jpg, copy, png, flat}) DeleteFileW(path.c_str());
 }
 
+// An image the decoded bitmap holds exactly, as a pasted one then stands in for its data, saves with every pixel
+// from that bitmap on the 24bpp and palette paths, even while it is selected into a DC as the viewer keeps it.
+// One with a color profile isn't exact, since the bitmap would lose the profile.
+void TestBitmapSource(IWICImagingFactory* wic) {
+    std::mt19937 rng(11);
+    const std::wstring png = TempPath(L"bitmap.png"), saved = TempPath(L"bitmap saved.png");
+    const struct {
+        UINT colors;
+        WORD bpp;
+    } kinds[] = {{0, 24}, {200, 8}, {16, 4}, {2, 1}};
+    const HDC dc = CreateCompatibleDC(nullptr);
+    for (const auto& kind : kinds) {
+        Image image;
+        DIBSECTION ds{};
+        if (FAILED(WriteImage(wic, png, GUID_ContainerFormatPng, GUID_WICPixelFormat24bppBGR, 150, 97, 0, rng,
+                              kind.colors ? 97 : 0, kind.colors))) {
+            Fail("can't write a bitmap test image", kind.bpp);
+        } else if (FAILED(DecodeImage(Source{png}, image)) || !image.exact ||
+                   GetObjectW(image.bitmap, sizeof(ds), &ds) != sizeof(ds) || ds.dsBm.bmBitsPixel != kind.bpp) {
+            Fail("decoded bitmap isn't the smallest exact one", kind.bpp);
+        } else {
+            const HGDIOBJ old = SelectObject(dc, image.bitmap);
+            const HRESULT hr = SaveImage(Source{.bitmap = image.bitmap}, saved);
+            SelectObject(dc, old);
+            UINT w = 0, h = 0, sw = 0, sh = 0;
+            const std::vector<BYTE> want = WicUpright(wic, png, 1, w, h);
+            if (FAILED(hr) || want.empty() || want != WicUpright(wic, saved, 1, sw, sh) || sw != w || sh != h) {
+                Fail("saving from the decoded bitmap changed pixels", kind.bpp);
+            }
+        }
+        if (image.bitmap) DeleteObject(image.bitmap);
+    }
+    DeleteDC(dc);
+
+    wchar_t system[MAX_PATH];
+    GetSystemDirectoryW(system, MAX_PATH);
+    const std::wstring icc = std::wstring(system) + L"\\spool\\drivers\\color\\sRGB Color Space Profile.icm";
+    ComPtr<IWICColorContext> profile;
+    Image image;
+    if (FAILED(wic->CreateColorContext(&profile)) || FAILED(profile->InitializeFromFilename(icc.c_str())) ||
+        FAILED(WriteImage(wic, png, GUID_ContainerFormatPng, GUID_WICPixelFormat24bppBGR, 150, 97, 0, rng, 97, 16,
+                          profile.Get())) ||
+        FAILED(DecodeImage(Source{png}, image))) {
+        Fail("can't decode an image with a color profile", 0);
+    } else if (image.exact) {
+        Fail("an image with a color profile counts as exact", 0);
+    }
+    if (image.bitmap) DeleteObject(image.bitmap);
+    for (const std::wstring& path : {png, saved}) DeleteFileW(path.c_str());
+}
+
 }  // namespace
 
 int main() {
@@ -292,6 +362,7 @@ int main() {
         TestScaling();
         TestOrientation(wic.Get());
         TestSave(wic.Get());
+        TestBitmapSource(wic.Get());
     }
     CoUninitialize();
     printf(failures ? "%d failed\n" : "all passed\n", failures);
