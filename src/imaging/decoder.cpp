@@ -288,10 +288,11 @@ HRESULT CheckGif(IWICBitmapDecoder* decoder) {
 }
 
 // Shows the first frame of an animated GIF on a new 24bpp canvas. Fails for anything else.
-HRESULT DecodeFirstFrame(IWICImagingFactory* wic, IWICBitmapDecoder* decoder, Image& out) {
+HRESULT DecodeFirstFrame(IWICImagingFactory* wic, IWICBitmapDecoder* decoder, Image& out,
+                         const std::atomic<bool>* stop) {
     Animation a;
     HRESULT hr = CheckGif(decoder);
-    if (SUCCEEDED(hr)) hr = ReadAnimation(wic, decoder, a, true);
+    if (SUCCEEDED(hr)) hr = ReadAnimation(wic, decoder, a, true, stop);
     if (FAILED(hr)) return hr;
     const HBITMAP bitmap = CreateDib(a.width, a.height, 24, nullptr, 0, a.bits);
     if (!bitmap) return E_OUTOFMEMORY;
@@ -456,7 +457,7 @@ HRESULT DecodeAnimation(const Source& src, Animation& out, const std::atomic<boo
     return hr;
 }
 
-HRESULT DecodeImage(const Source& src, Image& out, bool* animated) {
+HRESULT DecodeImage(const Source& src, Image& out, bool* animated, const std::atomic<bool>* stop) {
     if (animated) *animated = false;
     const WicFactory wic;
     HRESULT hr = wic.hr;
@@ -470,7 +471,7 @@ HRESULT DecodeImage(const Source& src, Image& out, bool* animated) {
     } else {
         ComPtr<IWICBitmapDecoder> decoder;
         hr = OpenDecoder(wic.Get(), src, decoder);
-        if (SUCCEEDED(hr) && animated && SUCCEEDED(DecodeFirstFrame(wic.Get(), decoder.Get(), out))) {
+        if (SUCCEEDED(hr) && animated && SUCCEEDED(DecodeFirstFrame(wic.Get(), decoder.Get(), out, stop))) {
             *animated = true;
             return S_OK;
         }
@@ -517,6 +518,10 @@ HRESULT DecodeImage(const Source& src, Image& out, bool* animated) {
     const UINT bg = kBackground & 0xFF;  // gray: all channels equal
     BYTE alpha = 255;  // AND of all alpha values: 255 if nothing is transparent
     for (UINT y0 = 0; y0 < height; y0 += rows) {
+        if (stop && stop->load()) {
+            hr = E_ABORT;
+            break;
+        }
         const UINT n = std::min(rows, height - y0);
         const WICRect rect{0, INT(y0), INT(width), INT(n)};
         if (direct) {

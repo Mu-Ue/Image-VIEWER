@@ -62,8 +62,8 @@ struct Animation;
 
 // Decodes into the smallest exact DIB section. Needs COM initialized on the calling thread. If animated is
 // given, it is set to whether the image is an animated GIF, and out is then its canvas showing the first
-// frame, for DecodeAnimation to play.
-HRESULT DecodeImage(const Source& src, Image& out, bool* animated = nullptr);
+// frame, for DecodeAnimation to play. Gives up with E_ABORT once stop, if given, is set.
+HRESULT DecodeImage(const Source& src, Image& out, bool* animated = nullptr, const std::atomic<bool>* stop = nullptr);
 
 // Reads every frame of an animated GIF, which can take a while for a large one, so it gives up with E_ABORT
 // once stop is set. Needs COM initialized on the calling thread.

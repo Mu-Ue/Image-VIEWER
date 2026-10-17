@@ -375,7 +375,7 @@ struct {
     CONDITION_VARIABLE wake = CONDITION_VARIABLE_INIT;
     Decode* next = nullptr;  // waiting to start
     bool running = false;
-    std::atomic<bool> waiting{false};  // next is set, which stops reading an animation's frames
+    std::atomic<bool> waiting{false};  // next is set or the decode was cancelled, which stops the one in progress
     std::atomic<UINT64> latest{0};  // the id of the latest request
 } worker;
 
@@ -410,7 +410,9 @@ void RunDecoder() {
             if (animate) {
                 delete d;
             } else {
-                if (id == worker.latest) d->hr = FAILED(com) ? com : DecodeImage(d->src, d->image, &d->animated);
+                if (id == worker.latest) {
+                    d->hr = FAILED(com) ? com : DecodeImage(d->src, d->image, &d->animated, &worker.waiting);
+                }
                 animate = SUCCEEDED(d->hr) && d->animated;
                 if (id != worker.latest || !PostMessageW(g.hwnd, kDecodedMessage, 0, LPARAM(d))) {
                     Discard(d);
@@ -473,7 +475,7 @@ void CancelDecode() {
     worker.latest = worker.latest + 1;
     AcquireSRWLockExclusive(&worker.lock);
     Decode* const waiting = std::exchange(worker.next, nullptr);
-    worker.waiting = false;
+    worker.waiting = true;  // until the decoder thread takes the next request
     ReleaseSRWLockExclusive(&worker.lock);
     if (waiting) Discard(waiting);
     g.stepTarget.clear();
