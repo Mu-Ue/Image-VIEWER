@@ -117,6 +117,11 @@ void ClampOffset() {
     g.offsetY = h <= g.clientH ? (g.clientH - h) / 2 : std::clamp(g.offsetY, g.clientH - h, 0.0f);
 }
 
+// Whether dragging moves the image: it is larger than the window on some axis.
+bool CanPan() {
+    return g.image.bitmap && (g.imageW * g.zoom > g.clientW + 0.5f || g.imageH * g.zoom > g.clientH + 0.5f);
+}
+
 // Puts the offset on screen at the next full repaint.
 void ShowOffset() {
     g.shownX = int(std::round(g.offsetX));
@@ -559,7 +564,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g.dragging = true;
             g.dragFrom = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
             SetCapture(hwnd);
+            if (CanPan()) SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
             return 0;
+        case WM_SETCURSOR:  // the move cursor while dragging an image that doesn't fit
+            if (g.dragging && CanPan()) {
+                SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+                return TRUE;
+            }
+            break;
         case WM_MOUSEMOVE:
             if (g.dragging) {
                 const POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
@@ -572,6 +584,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_CAPTURECHANGED:
             g.dragging = false;
+            SetCursor(LoadCursorW(nullptr, IDC_ARROW));
             return 0;
         case WM_LBUTTONDBLCLK: {  // toggle fit <-> 100% (2x for images smaller than the window)
             const float fitZoom = FitZoom();
