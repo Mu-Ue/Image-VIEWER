@@ -51,16 +51,21 @@ LONG Height(const RECT& r) { return r.bottom - r.top; }
 
 }  // namespace
 
-HRESULT ReadAnimation(IWICImagingFactory* wic, IWICBitmapDecoder* decoder, Animation& out) {
+HRESULT ReadAnimation(IWICImagingFactory* wic, IWICBitmapDecoder* decoder, Animation& out, bool firstOnly,
+                      const std::atomic<bool>* stop) {
     // Counted by asking for frames in turn: WIC indexes a GIF only as far as asked, so a file of millions of
     // tiny frames stops at the cap instead of being indexed whole. Asking in order also keeps clear of a WIC
     // quirk, where jumping past the last frame makes up one more.
+    const auto stopped = [&] { return stop && stop->load(); };
     UINT count = 0;
-    for (ComPtr<IWICBitmapFrameDecode> frame; count <= kMaxGifFrames && SUCCEEDED(decoder->GetFrame(count, &frame));) {
+    for (ComPtr<IWICBitmapFrameDecode> frame; count <= kMaxGifFrames && (!firstOnly || count < 2) &&
+                                              SUCCEEDED(decoder->GetFrame(count, &frame));) {
+        if (stopped()) return E_ABORT;
         ++count;
     }
     if (count > kMaxGifFrames) return WINCODEC_ERR_IMAGESIZEOUTOFRANGE;
     if (count < 2) return WINCODEC_ERR_UNSUPPORTEDOPERATION;
+    if (firstOnly) count = 1;
     ComPtr<IWICMetadataQueryReader> reader;
     HRESULT hr = decoder->GetMetadataQueryReader(&reader);
     if (FAILED(hr)) return hr;
@@ -91,6 +96,7 @@ HRESULT ReadAnimation(IWICImagingFactory* wic, IWICBitmapDecoder* decoder, Anima
         Frame& f = frames[i];
         UINT colors = 0;
         if (SUCCEEDED(hr)) hr = palette->GetColors(256, f.colors, &colors);
+        if (SUCCEEDED(hr) && stopped()) hr = E_ABORT;
         if (FAILED(hr)) return hr;
         std::fill(f.colors + colors, f.colors + 256, 0u);
         for (UINT32& c : f.colors) c &= 0xFFFFFF;
@@ -121,6 +127,7 @@ HRESULT ReadAnimation(IWICImagingFactory* wic, IWICBitmapDecoder* decoder, Anima
         if (w == 0 || h == 0) continue;
         const WICRect rect{0, 0, INT(w), INT(h)};  // clipping only ever trims the right and bottom
         hr = decoded[i]->CopyPixels(&rect, w, w * h, pixels.get() + f.offset);
+        if (SUCCEEDED(hr) && stopped()) hr = E_ABORT;
         if (FAILED(hr)) return hr;
     }
 

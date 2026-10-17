@@ -4,6 +4,7 @@
 #include <wincodec.h>
 #include <wrl/client.h>
 
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -59,9 +60,14 @@ void ReadColorProfiles(IWICImagingFactory* wic, const Source& src,
 
 struct Animation;
 
-// Decodes into the smallest exact DIB section. Needs COM initialized on the calling thread. If animation is
-// given and the image is an animated GIF, it is read into animation and out is its canvas showing frame 0.
-HRESULT DecodeImage(const Source& src, Image& out, Animation* animation = nullptr);
+// Decodes into the smallest exact DIB section. Needs COM initialized on the calling thread. If animated is
+// given, it is set to whether the image is an animated GIF, and out is then its canvas showing the first
+// frame, for DecodeAnimation to play.
+HRESULT DecodeImage(const Source& src, Image& out, bool* animated = nullptr);
+
+// Reads every frame of an animated GIF, which can take a while for a large one, so it gives up with E_ABORT
+// once stop is set. Needs COM initialized on the calling thread.
+HRESULT DecodeAnimation(const Source& src, Animation& out, const std::atomic<bool>& stop);
 
 // Whether a file name ends in one of the image extensions this viewer opens.
 bool IsImageName(const wchar_t* name);

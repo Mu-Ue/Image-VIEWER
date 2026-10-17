@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <wincodec.h>
 
+#include <atomic>
 #include <vector>
 
 #include "platform/pages.h"
@@ -28,8 +29,10 @@ struct Animation {
     UINT width = 0, height = 0, stride = 0;
 };
 
-// Reads every frame of a GIF decoder with more than one. Fails if it has fewer, or is too large to play.
-HRESULT ReadAnimation(IWICImagingFactory* wic, IWICBitmapDecoder* decoder, Animation& out);
+// Reads every frame of a GIF decoder with more than one, or only the first if firstOnly. Fails if it has
+// fewer, or is too large to play, and gives up with E_ABORT once stop is set.
+HRESULT ReadAnimation(IWICImagingFactory* wic, IWICBitmapDecoder* decoder, Animation& out, bool firstOnly,
+                      const std::atomic<bool>* stop = nullptr);
 
 // Draws frame i over the previous one on the canvas and returns how long to show it.
 UINT ShowFrame(Animation& animation, size_t i);

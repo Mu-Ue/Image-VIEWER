@@ -26,6 +26,7 @@ namespace {
 constexpr UINT_PTR kAnimationTimer = 1;
 constexpr LONGLONG kFrameLeadUs = 1000;  // a pan is painted this long before the display refreshes
 constexpr UINT kDecodedMessage = WM_APP;  // lParam is a finished Decode, which the window then owns
+constexpr UINT kFramesMessage = WM_APP + 1;  // lParam is Frames, which the window then owns
 constexpr DWORD kDecoderIdleMs = 10000;  // the decoder thread, and WIC with it, stays this long after an image
 
 struct Viewer {
@@ -41,7 +42,9 @@ struct Viewer {
 
     Image image;
     Animation animation;  // of an animated GIF, drawn into image.bitmap
+    bool awaitingFrames = false;  // the image is an animated GIF whose frames are still being read
     bool paused = false;  // the animation, while the window is minimized
+    UINT64 shownId = 0;  // of the request whose image is shown
     HDC imageDC = nullptr;  // memory DC holding image.bitmap
     HBRUSH background = nullptr;
 
@@ -300,17 +303,14 @@ void ShowError(HRESULT hr, const std::wstring& name) {
 
 // Shows a decoded image, replacing the current one. bytes is the size of a pasted image's compressed data, if
 // known; a file's size is read from the file.
-void SetImage(const Image& image, std::wstring name, UINT64 bytes = 0, Animation animation = {}) {
+void SetImage(const Image& image, std::wstring name, UINT64 bytes = 0) {
     SelectObject(g.imageDC, image.bitmap);
     if (g.image.bitmap) DeleteObject(g.image.bitmap);
     g.image = image;
-    g.animation = std::move(animation);
+    g.animation = {};
+    g.awaitingFrames = false;
     g.paused = false;
-    if (g.animation.frames.empty()) {
-        KillTimer(g.hwnd, kAnimationTimer);
-    } else {
-        SetTimer(g.hwnd, kAnimationTimer, g.animation.frames[0].delay, nullptr);
-    }
+    KillTimer(g.hwnd, kAnimationTimer);
     g.name = std::move(name);
     g.imageW = float(image.width);
     g.imageH = float(image.height);
@@ -344,8 +344,9 @@ std::thread ComThread(HRESULT& hr, Work work) {
     });
 }
 
-// How a decode was asked for, which decides what a failure does.
-enum class Ask { Open, Paste, Step };
+// How a decode was asked for, which decides what a failure does. Animate only reads the frames of the
+// animated GIF shown.
+enum class Ask { Open, Paste, Step, Animate };
 
 // An image for the decoder thread, and what came of it.
 struct Decode {
@@ -356,6 +357,12 @@ struct Decode {
     UINT64 bytes;  // the compressed size of a pasted image, if known
     HRESULT hr = E_FAIL;
     Image image;
+    bool animated = false;  // image is the first frame of an animated GIF, whose Frames follow
+};
+
+// The frames of the animated GIF a Decode showed.
+struct Frames {
+    UINT64 id;  // of the Decode
     Animation animation;
 };
 
@@ -368,6 +375,7 @@ struct {
     CONDITION_VARIABLE wake = CONDITION_VARIABLE_INIT;
     Decode* next = nullptr;  // waiting to start
     bool running = false;
+    std::atomic<bool> waiting{false};  // next is set, which stops reading an animation's frames
     std::atomic<UINT64> latest{0};  // the id of the latest request
 } worker;
 
@@ -386,6 +394,7 @@ Decode* NextDecode() {
         }
     }
     Decode* const d = std::exchange(worker.next, nullptr);
+    worker.waiting = false;
     ReleaseSRWLockExclusive(&worker.lock);
     return d;
 }
@@ -395,8 +404,28 @@ void RunDecoder() {
     {
         const WicFactory keep;  // holds windowscodecs.dll, so each image doesn't load it again
         while (Decode* const d = NextDecode()) {
-            if (d->id == worker.latest) d->hr = FAILED(com) ? com : DecodeImage(d->src, d->image, &d->animation);
-            if (d->id != worker.latest || !PostMessageW(g.hwnd, kDecodedMessage, 0, LPARAM(d))) Discard(d);
+            const UINT64 id = d->id;
+            const Source src = d->src;  // for the frames, as d is handed over
+            bool animate = d->ask == Ask::Animate;
+            if (animate) {
+                delete d;
+            } else {
+                if (id == worker.latest) d->hr = FAILED(com) ? com : DecodeImage(d->src, d->image, &d->animated);
+                animate = SUCCEEDED(d->hr) && d->animated;
+                if (id != worker.latest || !PostMessageW(g.hwnd, kDecodedMessage, 0, LPARAM(d))) {
+                    Discard(d);
+                    animate = false;
+                }
+            }
+            // An animated GIF shows its first frame at once and plays once every frame is read, which a new
+            // request interrupts.
+            if (animate && SUCCEEDED(com) && id == worker.latest) {
+                auto* const f = new Frames{id};
+                if (FAILED(DecodeAnimation(src, f->animation, worker.waiting)) ||
+                    !PostMessageW(g.hwnd, kFramesMessage, 0, LPARAM(f))) {
+                    delete f;
+                }
+            }
         }
     }
     if (SUCCEEDED(com)) CoUninitialize();
@@ -409,6 +438,7 @@ void Request(Ask ask, Source src, std::wstring name, UINT64 bytes = 0) {
     worker.latest = d->id;
     AcquireSRWLockExclusive(&worker.lock);
     Decode* const replaced = std::exchange(worker.next, d);
+    worker.waiting = true;
     const bool start = !worker.running;
     worker.running = true;
     ReleaseSRWLockExclusive(&worker.lock);
@@ -423,6 +453,7 @@ void Request(Ask ask, Source src, std::wstring name, UINT64 bytes = 0) {
     // No thread: fail the request as if it had been decoded.
     AcquireSRWLockExclusive(&worker.lock);
     worker.running = false;
+    worker.waiting = false;
     Decode* const failed = std::exchange(worker.next, nullptr);
     ReleaseSRWLockExclusive(&worker.lock);
     if (failed) {
@@ -431,14 +462,22 @@ void Request(Ask ask, Source src, std::wstring name, UINT64 bytes = 0) {
     }
 }
 
+// Reads the frames of the animated GIF shown.
+void RequestFrames() {
+    Request(Ask::Animate, g.source, {});
+    g.shownId = worker.latest;
+}
+
 // Drops the request in progress, if any.
 void CancelDecode() {
     worker.latest = worker.latest + 1;
     AcquireSRWLockExclusive(&worker.lock);
     Decode* const waiting = std::exchange(worker.next, nullptr);
+    worker.waiting = false;
     ReleaseSRWLockExclusive(&worker.lock);
     if (waiting) Discard(waiting);
     g.stepTarget.clear();
+    if (g.awaitingFrames) RequestFrames();  // the request may have stopped them being read
 }
 
 std::wstring FileName(const std::wstring& path) {
@@ -615,8 +654,32 @@ void OnDecoded(Decode* d) {
     // A pasted copy is no longer needed once the bitmap holds every pixel of it.
     if (d->src.stream && d->image.exact) d->src = {.bitmap = d->image.bitmap};
     g.source = std::move(d->src);
-    SetImage(d->image, std::move(d->name), d->bytes, std::move(d->animation));
+    SetImage(d->image, std::move(d->name), d->bytes);
+    g.shownId = d->id;
+    g.awaitingFrames = d->animated;
     delete d;
+}
+
+// Plays the animated GIF shown once all its frames are read.
+void OnFrames(Frames* f) {
+    Animation& a = f->animation;
+    DIBSECTION ds{};
+    if (f->id == g.shownId && g.awaitingFrames &&
+        GetObjectW(g.image.bitmap, sizeof(ds), &ds) == sizeof(ds) && ds.dsBm.bmBitsPixel == 24 &&
+        UINT(ds.dsBm.bmWidth) == a.width && UINT(ds.dsBm.bmHeight) == a.height) {
+        a.bits = static_cast<BYTE*>(ds.dsBm.bmBits);
+        a.stride = UINT(ds.dsBm.bmWidthBytes);
+        g.animation = std::move(a);
+        g.awaitingFrames = false;
+        GdiFlush();
+        ShowFrame(g.animation, 0);  // the same pixels, but keeping what the frame's disposal needs
+        if (IsIconic(g.hwnd)) {
+            g.paused = true;
+        } else {
+            SetTimer(g.hwnd, kAnimationTimer, g.animation.frames[0].delay, nullptr);
+        }
+    }
+    delete f;
 }
 
 void RunCommand(UINT cmd) {
@@ -751,6 +814,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case kDecodedMessage:
             OnDecoded(reinterpret_cast<Decode*>(lp));
             return 0;
+        case kFramesMessage:
+            OnFrames(reinterpret_cast<Frames*>(lp));
+            return 0;
         case WM_TIMER:
             if (wp == kAnimationTimer) NextFrame();
             return 0;
@@ -861,11 +927,11 @@ bool StartViewer(HINSTANCE instance, std::wstring path, int showCmd) {
 
     // Decode on a worker thread while the window is set up.
     Image image;
-    Animation animation;
+    bool animated = false;
     HRESULT decodeHr = S_OK;
     std::thread decoder;
     if (!g.source.path.empty()) {
-        decoder = ComThread(decodeHr, [&] { return DecodeImage(g.source, image, &animation); });
+        decoder = ComThread(decodeHr, [&] { return DecodeImage(g.source, image, &animated); });
     }
 
     g.hwnd = CreateMainWindow(instance);
@@ -881,7 +947,11 @@ bool StartViewer(HINSTANCE instance, std::wstring path, int showCmd) {
     // High resolution timers need Windows 10 1803; older versions pace pans less precisely.
     if (!g.frameTimer) g.frameTimer = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
     if (!g.imageDC || !g.frameTimer) return false;
-    if (image.bitmap) SetImage(image, g.name, 0, std::move(animation));
+    if (image.bitmap) SetImage(image, g.name);
+    if (animated) {
+        g.awaitingFrames = true;
+        RequestFrames();
+    }
 
     PlaceWindow();
     ShowWindow(g.hwnd, showCmd);

@@ -281,13 +281,17 @@ HRESULT OpenDecoder(IWICImagingFactory* wic, const Source& src, ComPtr<IWICBitma
     return hr;
 }
 
-// Reads an animated GIF and shows its first frame on a new 24bpp canvas. Fails for anything else.
-HRESULT DecodeAnimation(IWICImagingFactory* wic, IWICBitmapDecoder* decoder, Image& out, Animation& animation) {
+HRESULT CheckGif(IWICBitmapDecoder* decoder) {
     GUID container;
     HRESULT hr = decoder->GetContainerFormat(&container);
-    if (SUCCEEDED(hr) && container != GUID_ContainerFormatGif) hr = WINCODEC_ERR_UNSUPPORTEDOPERATION;
+    return SUCCEEDED(hr) && container != GUID_ContainerFormatGif ? WINCODEC_ERR_UNSUPPORTEDOPERATION : hr;
+}
+
+// Shows the first frame of an animated GIF on a new 24bpp canvas. Fails for anything else.
+HRESULT DecodeFirstFrame(IWICImagingFactory* wic, IWICBitmapDecoder* decoder, Image& out) {
     Animation a;
-    if (SUCCEEDED(hr)) hr = ReadAnimation(wic, decoder, a);
+    HRESULT hr = CheckGif(decoder);
+    if (SUCCEEDED(hr)) hr = ReadAnimation(wic, decoder, a, true);
     if (FAILED(hr)) return hr;
     const HBITMAP bitmap = CreateDib(a.width, a.height, 24, nullptr, 0, a.bits);
     if (!bitmap) return E_OUTOFMEMORY;
@@ -297,7 +301,6 @@ HRESULT DecodeAnimation(IWICImagingFactory* wic, IWICBitmapDecoder* decoder, Ima
     out.width = out.fullWidth = a.width;
     out.height = out.fullHeight = a.height;
     out.exact = false;  // the canvas changes as it plays
-    animation = std::move(a);
     return S_OK;
 }
 
@@ -424,7 +427,21 @@ void ReadColorProfiles(IWICImagingFactory* wic, const Source& src, std::vector<C
     }
 }
 
-HRESULT DecodeImage(const Source& src, Image& out, Animation* animation) {
+HRESULT DecodeAnimation(const Source& src, Animation& out, const std::atomic<bool>& stop) {
+    const WicFactory wic;
+    HRESULT hr = wic.hr;
+    // A pasted image's stream may be read elsewhere at the same time, so read a clone with its own position.
+    Source own{src.path};
+    if (SUCCEEDED(hr) && src.stream) hr = src.stream->Clone(&own.stream);
+    ComPtr<IWICBitmapDecoder> decoder;
+    if (SUCCEEDED(hr)) hr = OpenDecoder(wic.Get(), own, decoder);
+    if (SUCCEEDED(hr)) hr = CheckGif(decoder.Get());
+    if (SUCCEEDED(hr)) hr = ReadAnimation(wic.Get(), decoder.Get(), out, false, &stop);
+    return hr;
+}
+
+HRESULT DecodeImage(const Source& src, Image& out, bool* animated) {
+    if (animated) *animated = false;
     const WicFactory wic;
     HRESULT hr = wic.hr;
     if (FAILED(hr)) return hr;
@@ -437,7 +454,8 @@ HRESULT DecodeImage(const Source& src, Image& out, Animation* animation) {
     } else {
         ComPtr<IWICBitmapDecoder> decoder;
         hr = OpenDecoder(wic.Get(), src, decoder);
-        if (SUCCEEDED(hr) && animation && SUCCEEDED(DecodeAnimation(wic.Get(), decoder.Get(), out, *animation))) {
+        if (SUCCEEDED(hr) && animated && SUCCEEDED(DecodeFirstFrame(wic.Get(), decoder.Get(), out))) {
+            *animated = true;
             return S_OK;
         }
         if (SUCCEEDED(hr)) {
