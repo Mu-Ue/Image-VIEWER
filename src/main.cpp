@@ -20,9 +20,14 @@ void HardenProcess() {
     SetProcessMitigationPolicy(ProcessImageLoadPolicy, &policy, sizeof(policy));
 }
 
-// Keeps AppInit DLLs, Winsock LSPs, global window hooks and legacy IMEs out of the viewer, and ends it on
-// any use of an invalid handle. Not for the file dialog, which needs its shell extensions and IMEs.
+// Keeps AppInit DLLs, Winsock LSPs, global window hooks and legacy IMEs out of the viewer, ends it on
+// any use of an invalid handle, and loads fonts only from the Windows fonts folder (the viewer never loads
+// a font file itself). Not for the file dialog, which needs its shell extensions and IMEs. Dynamic code
+// stays allowed: codecs can reach GPU drivers, which may generate code.
 void HardenViewer() {
+    PROCESS_MITIGATION_FONT_DISABLE_POLICY fonts{};
+    fonts.DisableNonSystemFonts = 1;
+    SetProcessMitigationPolicy(ProcessFontDisablePolicy, &fonts, sizeof(fonts));
     PROCESS_MITIGATION_EXTENSION_POINT_DISABLE_POLICY extensions{};
     extensions.DisableExtensionPoints = 1;
     SetProcessMitigationPolicy(ProcessExtensionPointDisablePolicy, &extensions, sizeof(extensions));
