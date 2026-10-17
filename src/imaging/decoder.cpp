@@ -206,7 +206,8 @@ bool ForEachPixel(UINT width, UINT y0, UINT y1, const Placement& place, bool sid
 bool Is8BitColor(const WICPixelFormatGUID& format) {
     for (const GUID& f : {GUID_WICPixelFormat24bppBGR, GUID_WICPixelFormat32bppBGR, GUID_WICPixelFormat32bppBGRA,
                           GUID_WICPixelFormat8bppIndexed, GUID_WICPixelFormat4bppIndexed,
-                          GUID_WICPixelFormat2bppIndexed, GUID_WICPixelFormat1bppIndexed}) {
+                          GUID_WICPixelFormat2bppIndexed, GUID_WICPixelFormat1bppIndexed, GUID_WICPixelFormat8bppGray,
+                          GUID_WICPixelFormat4bppGray, GUID_WICPixelFormat2bppGray, GUID_WICPixelFormatBlackWhite}) {
         if (format == f) return true;
     }
     return false;
