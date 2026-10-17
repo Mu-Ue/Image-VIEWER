@@ -11,7 +11,8 @@ constexpr const wchar_t* kExtensions[] = {
 };
 constexpr wchar_t kFileFilter[] =
     L"Images\0*.jpg;*.jpeg;*.jpe;*.jfif;*.png;*.bmp;*.dib;*.gif;*.tif;*.tiff;*.ico;"
-    L"*.webp;*.heic;*.heif;*.avif;*.jxr;*.wdp\0";
+    L"*.webp;*.heic;*.heif;*.avif;*.jxr;*.wdp\0"
+    L"All files\0*.*\0";  // images are recognized by their contents, so a misnamed one still opens
 // Save As types; the first extension of each is the one appended.
 constexpr wchar_t kSaveFilter[] =
     L"PNG\0*.png\0JPG\0*.jpg;*.jpeg;*.jpe;*.jfif\0BMP\0*.bmp;*.dib\0GIF\0*.gif\0TIFF\0*.tif;*.tiff\0";
