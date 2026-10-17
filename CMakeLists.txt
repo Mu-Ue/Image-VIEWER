@@ -35,5 +35,17 @@ target_link_libraries(ImageVIEWER PRIVATE delayimp kernel32 user32 gdi32 imm32 d
 target_link_options(ImageVIEWER PRIVATE /DELAYLOAD:comdlg32.dll /DELAYLOAD:shell32.dll)
 # Control-flow guard, shadow stack, and DLL imports from System32 only (no planted DLLs next to the exe).
 target_link_options(ImageVIEWER PRIVATE /GUARD:CF /GUARD:EHCONT /CETCOMPAT /DEPENDENTLOADFLAG:0x800)
+# Checks that scaling, decoding and saving are exact. Not built by default: cmake --build build --target tests
+add_executable(tests EXCLUDE_FROM_ALL
+    tests/tests.cpp
+    src/imaging/animation.cpp
+    src/imaging/decoder.cpp
+    src/imaging/encoder.cpp
+    src/platform/handle_stream.cpp
+    src/ui/scale.cpp)
+target_include_directories(tests PRIVATE src)
+target_compile_definitions(tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(tests PRIVATE /W4 /permissive- /utf-8)
+target_link_libraries(tests PRIVATE kernel32 user32 gdi32 ole32 uuid)
 # Double-clickable helper next to the exe that runs --register.
 configure_file(register.bat ${CMAKE_BINARY_DIR}/register.bat COPYONLY)
