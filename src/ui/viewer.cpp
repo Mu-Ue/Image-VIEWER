@@ -33,6 +33,7 @@ struct Viewer {
 
     Image image;
     Animation animation;  // of an animated GIF, drawn into image.bitmap
+    bool paused = false;  // the animation, while the window is minimized
     HDC imageDC = nullptr;  // memory DC holding image.bitmap
     HBRUSH background = nullptr;
 
@@ -276,6 +277,7 @@ void SetImage(const Image& image, std::wstring name, UINT64 bytes = 0, Animation
     if (g.image.bitmap) DeleteObject(g.image.bitmap);
     g.image = image;
     g.animation = std::move(animation);
+    g.paused = false;
     if (g.animation.frames.empty()) {
         KillTimer(g.hwnd, kAnimationTimer);
     } else {
@@ -518,6 +520,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return hit == HTCLIENT && pt.y < g.barH ? HTCAPTION : hit;
         }
         case WM_SIZE:
+            if (wp == SIZE_MINIMIZED && !g.animation.frames.empty()) {  // nothing shows it
+                KillTimer(hwnd, kAnimationTimer);
+                g.paused = true;
+            } else if (wp != SIZE_MINIMIZED && g.paused) {
+                g.paused = false;
+                SetTimer(hwnd, kAnimationTimer, g.animation.frames[g.animation.current].delay, nullptr);
+            }
             MoveWindow(g.bar, 0, 0, LOWORD(lp), g.barH, TRUE);
             MoveWindow(g.status, 0, HIWORD(lp) - g.statusH, LOWORD(lp), g.statusH, TRUE);
             OnSize(float(LOWORD(lp)), float(HIWORD(lp) - g.barH - g.statusH));
