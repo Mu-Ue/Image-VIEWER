@@ -4,9 +4,11 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <string_view>
 #include <thread>
+#include <utility>
 
 #include "config.h"
 #include "imaging/animation.h"
@@ -23,6 +25,8 @@ namespace {
 
 constexpr UINT_PTR kAnimationTimer = 1;
 constexpr LONGLONG kFrameLeadUs = 1000;  // a pan is painted this long before the display refreshes
+constexpr UINT kDecodedMessage = WM_APP;  // lParam is a finished Decode, which the window then owns
+constexpr DWORD kDecoderIdleMs = 10000;  // the decoder thread, and WIC with it, stays this long after an image
 
 struct Viewer {
     HWND hwnd = nullptr;
@@ -31,6 +35,9 @@ struct Viewer {
     Source source;  // of the current image, re-read when saving
     std::wstring name;
     std::wstring resolution, size;  // shown in the status bar
+    std::wstring stepTarget;  // the file a step is decoding, empty if none
+    std::wstring stepFirst;  // the first file the step tried, to stop if every other file fails
+    int stepDir = 1;
 
     Image image;
     Animation animation;  // of an animated GIF, drawn into image.bitmap
@@ -337,21 +344,101 @@ std::thread ComThread(HRESULT& hr, Work work) {
     });
 }
 
-// Decodes and shows an image, keeping the current one if that fails.
-HRESULT Load(Source src, std::wstring name, bool showError = true, UINT64 bytes = 0) {
+// How a decode was asked for, which decides what a failure does.
+enum class Ask { Open, Paste, Step };
+
+// An image for the decoder thread, and what came of it.
+struct Decode {
+    UINT64 id;
+    Ask ask;
+    Source src;
+    std::wstring name;
+    UINT64 bytes;  // the compressed size of a pasted image, if known
+    HRESULT hr = E_FAIL;
     Image image;
     Animation animation;
-    HRESULT hr;
-    ComThread(hr, [&] { return DecodeImage(src, image, &animation); }).join();
-    if (FAILED(hr)) {
-        if (showError) ShowError(hr, name);
-        return hr;
+};
+
+// The decoder thread decodes only the latest request: a new one replaces any still waiting, and a result
+// that is no longer the latest is dropped, so the window never waits and held keys never queue up images.
+// It keeps WIC and its codecs loaded while images keep coming and ends once idle, which unloads them; the
+// UI thread never starts COM. Nothing here has a destructor, so exiting while it decodes is safe.
+struct {
+    SRWLOCK lock = SRWLOCK_INIT;
+    CONDITION_VARIABLE wake = CONDITION_VARIABLE_INIT;
+    Decode* next = nullptr;  // waiting to start
+    bool running = false;
+    std::atomic<UINT64> latest{0};  // the id of the latest request
+} worker;
+
+void Discard(Decode* d) {
+    if (d->image.bitmap) DeleteObject(d->image.bitmap);
+    delete d;
+}
+
+// The next request for the decoder thread, or null once it has been idle long enough to end.
+Decode* NextDecode() {
+    AcquireSRWLockExclusive(&worker.lock);
+    while (!worker.next) {
+        if (!SleepConditionVariableSRW(&worker.wake, &worker.lock, kDecoderIdleMs, 0) && !worker.next) {
+            worker.running = false;  // the next request starts a new thread
+            break;
+        }
     }
-    // A pasted copy is no longer needed once the bitmap holds every pixel of it.
-    if (src.stream && image.exact) src = {.bitmap = image.bitmap};
-    g.source = std::move(src);
-    SetImage(image, std::move(name), bytes, std::move(animation));
-    return S_OK;
+    Decode* const d = std::exchange(worker.next, nullptr);
+    ReleaseSRWLockExclusive(&worker.lock);
+    return d;
+}
+
+void RunDecoder() {
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    {
+        const WicFactory keep;  // holds windowscodecs.dll, so each image doesn't load it again
+        while (Decode* const d = NextDecode()) {
+            if (d->id == worker.latest) d->hr = FAILED(com) ? com : DecodeImage(d->src, d->image, &d->animation);
+            if (d->id != worker.latest || !PostMessageW(g.hwnd, kDecodedMessage, 0, LPARAM(d))) Discard(d);
+        }
+    }
+    if (SUCCEEDED(com)) CoUninitialize();
+}
+
+// Decodes an image on the decoder thread, to be shown by OnDecoded.
+void Request(Ask ask, Source src, std::wstring name, UINT64 bytes = 0) {
+    if (ask != Ask::Step) g.stepTarget.clear();
+    auto* const d = new Decode{worker.latest + 1, ask, std::move(src), std::move(name), bytes};
+    worker.latest = d->id;
+    AcquireSRWLockExclusive(&worker.lock);
+    Decode* const replaced = std::exchange(worker.next, d);
+    const bool start = !worker.running;
+    worker.running = true;
+    ReleaseSRWLockExclusive(&worker.lock);
+    WakeConditionVariable(&worker.wake);
+    if (replaced) Discard(replaced);
+    if (!start) return;
+    const HANDLE thread = CreateThread(nullptr, 0, [](void*) -> DWORD { RunDecoder(); return 0; }, nullptr, 0, nullptr);
+    if (thread) {
+        CloseHandle(thread);
+        return;
+    }
+    // No thread: fail the request as if it had been decoded.
+    AcquireSRWLockExclusive(&worker.lock);
+    worker.running = false;
+    Decode* const failed = std::exchange(worker.next, nullptr);
+    ReleaseSRWLockExclusive(&worker.lock);
+    if (failed) {
+        failed->hr = HRESULT_FROM_WIN32(GetLastError());
+        if (!PostMessageW(g.hwnd, kDecodedMessage, 0, LPARAM(failed))) Discard(failed);
+    }
+}
+
+// Drops the request in progress, if any.
+void CancelDecode() {
+    worker.latest = worker.latest + 1;
+    AcquireSRWLockExclusive(&worker.lock);
+    Decode* const waiting = std::exchange(worker.next, nullptr);
+    ReleaseSRWLockExclusive(&worker.lock);
+    if (waiting) Discard(waiting);
+    g.stepTarget.clear();
 }
 
 std::wstring FileName(const std::wstring& path) {
@@ -362,7 +449,7 @@ void Open() {
     std::wstring path = RunFileDialog(g.hwnd, L"open", {});
     if (path.empty()) return;
     std::wstring name = FileName(path);
-    Load({std::move(path)}, std::move(name));
+    Request(Ask::Open, {std::move(path)}, std::move(name));
 }
 
 // File names are not case-sensitive.
@@ -409,21 +496,29 @@ void Neighbors(const std::wstring& path, std::wstring (&around)[2]) {
     around[1] = after.empty() ? L"" : dir + after;
 }
 
+// Asks for the image after (or before) from in the step's direction.
+void StepFrom(std::wstring from) {
+    std::wstring around[2];
+    Neighbors(from, around);
+    std::wstring& to = around[g.stepDir > 0];
+    // Back at the image shown, nothing else, or every other file failed.
+    if (to.empty() || SamePath(to, g.source.path) || SamePath(to, g.stepFirst)) {
+        CancelDecode();
+        return;
+    }
+    if (g.stepFirst.empty()) g.stepFirst = to;
+    g.stepTarget = to;
+    std::wstring name = FileName(to);
+    Request(Ask::Step, {std::move(to)}, std::move(name));
+}
+
 // Shows the previous (step < 0) or next image in the folder, silently skipping files that can't be opened.
+// Steps go on from the image last asked for, so quick presses add up while the decoder catches up.
 void Step(int step) {
     if (g.source.path.empty()) return;
-    const std::wstring start = g.source.path;
-    std::wstring from = start, first;
-    for (;;) {
-        std::wstring around[2];
-        Neighbors(from, around);
-        std::wstring& to = around[step > 0];
-        if (to.empty() || SamePath(to, start) || to == first) return;  // nothing else, or every other file failed
-        if (first.empty()) first = to;
-        std::wstring name = FileName(to);
-        if (SUCCEEDED(Load({to}, std::move(name), false))) return;
-        from = std::move(to);
-    }
+    g.stepDir = step;
+    g.stepFirst.clear();
+    StepFrom(g.stepTarget.empty() ? g.source.path : g.stepTarget);
 }
 
 void SaveAs() {
@@ -478,20 +573,50 @@ void Copy() {
     }
 }
 
+void ShowPasteError(HRESULT hr) {
+    const std::wstring reason = ErrorReason(hr);
+    ShowStatusMessage(L"Can't paste. " + (reason.empty() ? L"It isn't a supported image." : reason));
+}
+
 // Shows the clipboard image, or the first file copied in Explorer. Problems go to the status bar.
 void Paste() {
     Source src;
     std::wstring name;
     UINT64 bytes;
-    HRESULT hr = ReadClipboardImage(g.hwnd, src, name, bytes);
-    if (!src.path.empty()) name = FileName(src.path);
-    if (hr == S_OK) hr = Load(std::move(src), std::move(name), false, bytes);
-    if (hr == S_FALSE) {
+    const HRESULT hr = ReadClipboardImage(g.hwnd, src, name, bytes);
+    if (hr == S_OK) {
+        if (!src.path.empty()) name = FileName(src.path);
+        Request(Ask::Paste, std::move(src), std::move(name), bytes);
+    } else if (hr == S_FALSE) {
         ShowStatusMessage(L"Nothing to paste: the clipboard doesn't hold an image.");
-    } else if (FAILED(hr)) {
-        const std::wstring reason = ErrorReason(hr);
-        ShowStatusMessage(L"Can't paste. " + (reason.empty() ? L"It isn't a supported image." : reason));
+    } else {
+        ShowPasteError(hr);
     }
+}
+
+// Shows a decoded image, or what went wrong, unless a newer request replaced it.
+void OnDecoded(Decode* d) {
+    if (d->id != worker.latest) return Discard(d);
+    if (FAILED(d->hr)) {
+        const Ask ask = d->ask;
+        const HRESULT hr = d->hr;
+        std::wstring name = std::move(d->name), path = std::move(d->src.path);
+        Discard(d);
+        if (ask == Ask::Open) {
+            ShowError(hr, name);
+        } else if (ask == Ask::Paste) {
+            ShowPasteError(hr);
+        } else {
+            StepFrom(std::move(path));  // skip it
+        }
+        return;
+    }
+    g.stepTarget.clear();
+    // A pasted copy is no longer needed once the bitmap holds every pixel of it.
+    if (d->src.stream && d->image.exact) d->src = {.bitmap = d->image.bitmap};
+    g.source = std::move(d->src);
+    SetImage(d->image, std::move(d->name), d->bytes, std::move(d->animation));
+    delete d;
 }
 
 void RunCommand(UINT cmd) {
@@ -619,10 +744,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             DragFinish(drop);
             if (!path.empty()) {
                 std::wstring name = FileName(path);
-                Load({std::move(path)}, std::move(name));
+                Request(Ask::Open, {std::move(path)}, std::move(name));
             }
             return 0;
         }
+        case kDecodedMessage:
+            OnDecoded(reinterpret_cast<Decode*>(lp));
+            return 0;
         case WM_TIMER:
             if (wp == kAnimationTimer) NextFrame();
             return 0;
