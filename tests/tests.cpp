@@ -11,9 +11,13 @@
 #include <string>
 #include <vector>
 
+#include "imaging/animation.h"
 #include "imaging/decoder.h"
 #include "imaging/encoder.h"
 #include "ui/scale.h"
+
+// Included for its parsers of clipboard data, which other programs control.
+#include "platform/clipboard.cpp"
 
 using Microsoft::WRL::ComPtr;
 
@@ -352,6 +356,174 @@ void TestBitmapSource(IWICImagingFactory* wic) {
     for (const std::wstring& path : {png, saved}) DeleteFileW(path.c_str());
 }
 
+// A clipboard DIB is accepted only if its header is one Windows writes and its colors and pixels fit the data.
+void TestClipboardDib() {
+    struct Dib {
+        BITMAPINFOHEADER header;
+        BYTE rest[1024];
+    };
+    const auto measure = [](const Dib& dib, SIZE_T size, UINT64& offset) {
+        return MeasureDib(reinterpret_cast<const BYTE*>(&dib), size, offset);
+    };
+    UINT64 offset = 0;
+    // 3x2 at 24bpp: rows of 9 bytes padded to 12.
+    Dib dib{{sizeof(BITMAPINFOHEADER), 3, 2, 1, 24, BI_RGB}};
+    const SIZE_T size24 = sizeof(BITMAPINFOHEADER) + 24;
+    if (measure(dib, size24, offset) != size24 || offset != sizeof(BITMAPINFOHEADER)) Fail("valid 24bpp DIB refused", 0);
+    if (measure(dib, size24 - 1, offset)) Fail("truncated DIB accepted", 0);
+    dib.header.biHeight = -2;  // top-down
+    if (measure(dib, size24, offset) != size24) Fail("top-down DIB refused", 0);
+
+    // 8bpp: a full color table unless biClrUsed says fewer.
+    dib.header.biBitCount = 8;
+    const SIZE_T size8 = sizeof(BITMAPINFOHEADER) + 256 * 4 + 8;
+    if (measure(dib, size8, offset) != size8 || offset != sizeof(BITMAPINFOHEADER) + 1024) Fail("8bpp DIB refused", 0);
+    dib.header.biClrUsed = 2;
+    if (measure(dib, sizeof(BITMAPINFOHEADER) + 8 + 8, offset) != sizeof(BITMAPINFOHEADER) + 16) {
+        Fail("8bpp DIB with 2 colors refused", 0);
+    }
+    dib.header.biClrUsed = 257;
+    if (measure(dib, sizeof(dib), offset)) Fail("DIB with more colors than its depth accepted", 257);
+
+    // 32bpp bitfields: three masks follow a plain header.
+    dib.header = {sizeof(BITMAPINFOHEADER), 3, 2, 1, 32, BI_BITFIELDS};
+    if (measure(dib, sizeof(BITMAPINFOHEADER) + 12 + 24, offset) != sizeof(BITMAPINFOHEADER) + 36 ||
+        offset != sizeof(BITMAPINFOHEADER) + 12) {
+        Fail("32bpp bitfields DIB refused", 0);
+    }
+
+    // Compressed, odd depths and sizes, and unknown headers never reach a decoder.
+    const struct {
+        DWORD headerSize;
+        LONG width, height;
+        WORD bpp;
+        DWORD compression;
+    } bad[] = {{sizeof(BITMAPINFOHEADER), 3, 2, 8, BI_RLE8}, {sizeof(BITMAPINFOHEADER), 3, 2, 24, BI_JPEG},
+               {sizeof(BITMAPINFOHEADER), 3, 2, 24, BI_PNG},  {sizeof(BITMAPINFOHEADER), 3, 2, 24, BI_BITFIELDS},
+               {sizeof(BITMAPINFOHEADER), 3, 2, 2, BI_RGB},   {sizeof(BITMAPINFOHEADER), 0, 2, 24, BI_RGB},
+               {sizeof(BITMAPINFOHEADER), -3, 2, 24, BI_RGB}, {sizeof(BITMAPINFOHEADER), 3, 0, 24, BI_RGB},
+               {sizeof(BITMAPINFOHEADER), 0x7FFFFFFF, 0x7FFFFFFF, 32, BI_RGB},
+               {sizeof(BITMAPINFOHEADER) + 1, 3, 2, 24, BI_RGB}, {12, 3, 2, 24, BI_RGB}};
+    for (int i = 0; i < int(std::size(bad)); ++i) {
+        dib.header = {bad[i].headerSize, bad[i].width, bad[i].height, 1, bad[i].bpp, bad[i].compression};
+        if (measure(dib, sizeof(dib), offset)) Fail("bad clipboard DIB accepted", i);
+    }
+    dib.header = {sizeof(BITMAPINFOHEADER), 3, 2, 2, 24, BI_RGB};  // two planes
+    if (measure(dib, sizeof(dib), offset)) Fail("DIB with two planes accepted", 0);
+    if (measure(dib, sizeof(BITMAPINFOHEADER) - 1, offset)) Fail("DIB shorter than its header accepted", 0);
+}
+
+// The first file of a DROPFILES list, as Explorer copies or drops it, or none if the list is malformed.
+void TestClipboardFiles() {
+    const auto first = [](DWORD pFiles, BOOL wide, const wchar_t* names, size_t chars, std::wstring& path) {
+        const SIZE_T size = sizeof(DROPFILES) + chars * sizeof(wchar_t);
+        const HGLOBAL data = GlobalAlloc(GMEM_MOVEABLE, size);
+        BYTE* const p = static_cast<BYTE*>(GlobalLock(data));
+        const DROPFILES drop{pFiles, {}, FALSE, wide};
+        memcpy(p, &drop, sizeof(drop));
+        memcpy(p + sizeof(drop), names, chars * sizeof(wchar_t));
+        GlobalUnlock(data);
+        path.clear();
+        const HRESULT hr = FirstFileOf(data, path);
+        GlobalFree(data);
+        return hr;
+    };
+    std::wstring path;
+    const wchar_t names[] = L"C:\\a.png\0C:\\b.png\0";
+    if (first(sizeof(DROPFILES), TRUE, names, std::size(names), path) != S_OK || path != L"C:\\a.png") {
+        Fail("first dropped file not read", 0);
+    }
+    if (first(sizeof(DROPFILES), FALSE, names, std::size(names), path) != S_FALSE) Fail("ANSI file list accepted", 0);
+    if (first(sizeof(DROPFILES) - 1, TRUE, names, std::size(names), path) != S_FALSE) {
+        Fail("file list overlapping its header accepted", 0);
+    }
+    if (first(DWORD(sizeof(DROPFILES) + sizeof(names)), TRUE, names, std::size(names), path) != S_FALSE) {
+        Fail("file list past its data accepted", 0);
+    }
+    if (first(sizeof(DROPFILES), TRUE, L"\0", 2, path) != S_FALSE) Fail("empty file name accepted", 0);
+    if (FirstFileOf(nullptr, path) != S_FALSE) Fail("missing file list accepted", 0);
+}
+
+// The file name an <img src> URL gives a pasted image: decoded, but never a path, a hidden name, or one that
+// reads differently than it is.
+void TestClipboardName() {
+    const struct {
+        const char* url;
+        const wchar_t* name;
+    } cases[] = {
+        {"https://example.com/images/cat.png", L"cat.png"},
+        {"https://example.com/a%20b.JPG?size=large#top", L"a b.JPG"},
+        {"https://example.com/caf%C3%A9.webp", L"caf\u00E9.webp"},
+        {"cat.png", L"cat.png"},
+        {"https://example.com/cat.txt", L""},
+        {"https://example.com/", L""},
+        {"https://example.com/.png", L""},
+        {"https://example.com/a%2F..%2Fb.png", L""},
+        {"https://example.com/a%5Cb.png", L""},
+        {"https://example.com/a%3Ab.png", L""},
+        {"https://example.com/a%0Ab.png", L""},
+        {"https://example.com/a%E2%80%AEgnp.exe.png", L""},
+        {"https://example.com/a%E2%81%A6b.png", L""},
+        {"https://example.com/a%FFb.png", L""},
+        {"https://example.com/a%zzb.png", L""},
+        {"https://example.com/a%2", L""},
+    };
+    for (int i = 0; i < int(std::size(cases)); ++i) {
+        if (ImageNameOf(cases[i].url) != cases[i].name) Fail("wrong name from an image URL", i);
+    }
+    const std::string longName = std::string(300, 'a') + ".png";
+    if (!ImageNameOf(longName).empty()) Fail("name longer than a file name accepted", 0);
+}
+
+// Each frame is drawn over the last, after undoing it as its disposal asks: 2 clears to the background, 3
+// restores what was there, and transparent pixels leave the canvas as it is.
+void TestAnimationDisposal() {
+    constexpr UINT kW = 4, kH = 2, kStride = 12;
+    constexpr UINT32 kRed = 0xFF0000, kGreen = 0x00FF00, kBlue = 0x0000FF;
+    BYTE canvas[kStride * kH];
+    Animation a;
+    a.width = kW;
+    a.height = kH;
+    a.stride = kStride;
+    a.bits = canvas;
+    const auto frame = [](RECT rect, BYTE disposal, int transparent, size_t offset) {
+        Frame f{rect, 100, disposal, transparent, offset, {}};
+        f.colors[1] = kRed;
+        f.colors[2] = kGreen;
+        f.colors[3] = kBlue;
+        return f;
+    };
+    a.frames = {frame({0, 0, 4, 2}, 0, -1, 0), frame({1, 0, 3, 1}, 3, -1, 8), frame({0, 1, 1, 2}, 2, -1, 10),
+                frame({3, 1, 4, 2}, 0, 0, 11)};
+    a.pixels = AllocPages<BYTE>(12);
+    const BYTE indices[12] = {1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 3, 0};
+    memcpy(a.pixels.get(), indices, sizeof(indices));
+    a.saved.resize(2 * 3);
+
+    const auto at = [&](UINT x, UINT y) {
+        const BYTE* p = canvas + y * kStride + x * 3;
+        return UINT32(p[0] | p[1] << 8 | p[2] << 16);
+    };
+    const auto expect = [&](const UINT32 (&want)[kH][kW], int step) {
+        for (UINT y = 0; y < kH; ++y) {
+            for (UINT x = 0; x < kW; ++x) {
+                if (at(x, y) != want[y][x]) return Fail("animation frame drawn wrong", step);
+            }
+        }
+    };
+    memset(canvas, 0x55, sizeof(canvas));
+    ShowFrame(a, 0);
+    expect({{kRed, kRed, kRed, kRed}, {kRed, kRed, kRed, kRed}}, 0);
+    ShowFrame(a, 1);
+    expect({{kRed, kGreen, kGreen, kRed}, {kRed, kRed, kRed, kRed}}, 1);
+    ShowFrame(a, 2);  // restores under frame 1
+    expect({{kRed, kRed, kRed, kRed}, {kBlue, kRed, kRed, kRed}}, 2);
+    ShowFrame(a, 3);  // clears under frame 2, and draws nothing itself
+    expect({{kRed, kRed, kRed, kRed}, {0, kRed, kRed, kRed}}, 3);
+    ShowFrame(a, 0);  // a new loop starts over
+    expect({{kRed, kRed, kRed, kRed}, {kRed, kRed, kRed, kRed}}, 4);
+}
+
 }  // namespace
 
 int main() {
@@ -364,6 +536,10 @@ int main() {
         TestSave(wic.Get());
         TestBitmapSource(wic.Get());
     }
+    TestClipboardDib();
+    TestClipboardFiles();
+    TestClipboardName();
+    TestAnimationDisposal();
     CoUninitialize();
     printf(failures ? "%d failed\n" : "all passed\n", failures);
     return failures ? 1 : 0;
