@@ -87,6 +87,35 @@ bool HasAlpha(IWICImagingFactory* wic, const WICPixelFormatGUID& format) {
            SUCCEEDED(pixel->SupportsTransparency(&alpha)) && alpha;
 }
 
+// Composites source over white, as other programs do for formats without alpha such as JPEG; just dropping
+// the alpha would show whatever colors the transparent pixels hold.
+HRESULT OverWhite(IWICImagingFactory* wic, IWICBitmapSource* source, ComPtr<IWICBitmapSource>& out) {
+    ComPtr<IWICFormatConverter> premultiplied;
+    ComPtr<IWICBitmap> bitmap;
+    ComPtr<IWICBitmapLock> lock;
+    HRESULT hr = wic->CreateFormatConverter(&premultiplied);
+    if (SUCCEEDED(hr)) {
+        hr = premultiplied->Initialize(source, GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0.0,
+                                       WICBitmapPaletteTypeCustom);
+    }
+    if (SUCCEEDED(hr)) hr = wic->CreateBitmapFromSource(premultiplied.Get(), WICBitmapCacheOnLoad, &bitmap);
+    if (SUCCEEDED(hr)) hr = bitmap->Lock(nullptr, WICBitmapLockRead | WICBitmapLockWrite, &lock);
+    UINT size = 0;
+    BYTE* data = nullptr;
+    if (SUCCEEDED(hr)) hr = lock->GetDataPointer(&size, &data);
+    if (FAILED(hr)) return hr;
+    for (BYTE* p = data; p + 4 <= data + size; p += 4) {  // stride padding, if any, is harmless to change
+        const BYTE white = BYTE(255 - p[3]);
+        p[0] = BYTE(p[0] + white);
+        p[1] = BYTE(p[1] + white);
+        p[2] = BYTE(p[2] + white);
+        p[3] = 255;
+    }
+    lock.Reset();
+    out = bitmap;
+    return S_OK;
+}
+
 // Maps source onto its best 256 colors for an 8bpp indexed frame (GIF). The converter matches colors only,
 // so with alpha it gets 255 colors, and pixels under half opacity become a transparent 256th.
 HRESULT ToIndexed(IWICImagingFactory* wic, IWICBitmapSource* source, bool alpha, IWICBitmapFrameEncode* frame,
@@ -170,11 +199,12 @@ HRESULT Encode(IWICImagingFactory* wic, IWICBitmapSource* source, IStream* strea
     if (SUCCEEDED(hr) && format == GUID_WICPixelFormat8bppIndexed && format != sourceFormat) {
         hr = ToIndexed(wic, source, HasAlpha(wic, sourceFormat), frame.Get(), pixels);
     } else if (SUCCEEDED(hr) && format != sourceFormat) {
+        if (HasAlpha(wic, sourceFormat) && !HasAlpha(wic, format)) hr = OverWhite(wic, source, pixels);
         // Same as WICConvertBitmapSource, without linking windowscodecs.dll into every launch.
         ComPtr<IWICFormatConverter> converter;
-        hr = wic->CreateFormatConverter(&converter);
+        if (SUCCEEDED(hr)) hr = wic->CreateFormatConverter(&converter);
         if (SUCCEEDED(hr)) {
-            hr = converter->Initialize(source, format, WICBitmapDitherTypeNone, nullptr, 0.0,
+            hr = converter->Initialize(pixels.Get(), format, WICBitmapDitherTypeNone, nullptr, 0.0,
                                        WICBitmapPaletteTypeCustom);
         }
         pixels = converter;
