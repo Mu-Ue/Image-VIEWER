@@ -666,6 +666,8 @@ bool StartViewer(HINSTANCE instance, std::wstring path, int showCmd) {
 
     g.imageDC = CreateCompatibleDC(nullptr);
     g.frameTimer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    // High resolution timers need Windows 10 1803; older versions pace pans less precisely.
+    if (!g.frameTimer) g.frameTimer = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
     if (!g.imageDC || !g.frameTimer) return false;
     if (image.bitmap) SetImage(image, g.name, 0, std::move(animation));
 
