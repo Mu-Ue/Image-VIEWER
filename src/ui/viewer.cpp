@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -282,6 +283,14 @@ std::wstring FileErrorReason(HRESULT hr) {
     return {};
 }
 
+// reason, or the error code if there is nothing more useful to say.
+std::wstring OrCode(std::wstring reason, HRESULT hr) {
+    if (!reason.empty()) return reason;
+    wchar_t code[32];
+    swprintf_s(code, L"Error 0x%08lX.", ULONG(hr));
+    return code;
+}
+
 // Why an image can't be opened, as a sentence, or empty if there is nothing more useful to say.
 std::wstring ErrorReason(HRESULT hr) {
     if (hr == WINCODEC_ERR_UNKNOWNIMAGEFORMAT || hr == WINCODEC_ERR_BADIMAGE) return L"It isn't a supported image.";
@@ -296,8 +305,7 @@ std::wstring ErrorReason(HRESULT hr) {
 }
 
 void ShowError(HRESULT hr, const std::wstring& name) {
-    std::wstring message = L"Can't open \"" + name + L"\".";
-    if (const std::wstring reason = ErrorReason(hr); !reason.empty()) message += L"\n\n" + reason;
+    const std::wstring message = L"Can't open \"" + name + L"\".\n\n" + OrCode(ErrorReason(hr), hr);
     MessageBoxW(g.hwnd, message.c_str(), kAppName, MB_OK | MB_ICONERROR);
 }
 
