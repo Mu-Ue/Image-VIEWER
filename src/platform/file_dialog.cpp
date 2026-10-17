@@ -4,6 +4,8 @@
 #include <commdlg.h>
 #include <shellapi.h>
 
+#include <vector>
+
 #include "config.h"
 
 namespace {
@@ -77,9 +79,18 @@ std::wstring RunFileDialog(HWND owner, const wchar_t* kind, const std::wstring& 
     HANDLE read = nullptr, write = nullptr;
     if (!CreatePipe(&read, &write, &sa, kMaxPath * sizeof(wchar_t))) return {};
     SetHandleInformation(read, HANDLE_FLAG_INHERIT, 0);
-    STARTUPINFOW si{sizeof(si)};
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdOutput = write;
+    STARTUPINFOEXW si{{sizeof(si)}};
+    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    si.StartupInfo.hStdOutput = write;
+    // The helper inherits the pipe and nothing else, whatever other handles are inheritable.
+    SIZE_T attributesSize = 0;
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &attributesSize);
+    std::vector<BYTE> attributes(attributesSize);
+    si.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributes.data());
+    const bool listed =
+        attributesSize && InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &attributesSize) &&
+        UpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &write, sizeof(write),
+                                  nullptr, nullptr);
     // The helper runs in a job that is killed when this process exits, so its dialog never outlives the viewer.
     static const HANDLE job = [] {
         const HANDLE h = CreateJobObjectW(nullptr, nullptr);
@@ -92,8 +103,11 @@ std::wstring RunFileDialog(HWND owner, const wchar_t* kind, const std::wstring& 
         return h;
     }();
     PROCESS_INFORMATION pi{};
-    const BOOL started = job && CreateProcessW(exe, cmd.data(), nullptr, nullptr, TRUE, CREATE_SUSPENDED, nullptr,
-                                               nullptr, &si, &pi);
+    const BOOL started = job && listed &&
+                         CreateProcessW(exe, cmd.data(), nullptr, nullptr, TRUE,
+                                        CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr,
+                                        &si.StartupInfo, &pi);
+    if (listed) DeleteProcThreadAttributeList(si.lpAttributeList);
     CloseHandle(write);
     if (!started) {
         CloseHandle(read);
