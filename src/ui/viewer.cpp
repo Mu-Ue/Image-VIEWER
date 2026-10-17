@@ -498,6 +498,16 @@ std::wstring FileName(const std::wstring& path) {
     return path.substr(path.find_last_of(L"\\/") + 1);
 }
 
+// The full path, so stepping lists the right folder and recognizes the image shown, even from a relative path.
+std::wstring FullPath(const std::wstring& path) {
+    const DWORD size = GetFullPathNameW(path.c_str(), 0, nullptr, nullptr);
+    std::wstring full(size, L'\0');
+    const DWORD length = size ? GetFullPathNameW(path.c_str(), size, full.data(), nullptr) : 0;
+    if (length == 0 || length >= size) return path;
+    full.resize(length);
+    return full;
+}
+
 void Open() {
     std::wstring path = RunFileDialog(g.hwnd, L"open", {});
     if (path.empty()) return;
@@ -978,8 +988,8 @@ HANDLE FrameTimer() {
 }
 
 bool StartViewer(HINSTANCE instance, std::wstring path, int showCmd) {
-    g.source.path = std::move(path);
-    g.name = g.source.path.substr(g.source.path.find_last_of(L"\\/") + 1);
+    g.source.path = FullPath(path);
+    g.name = FileName(g.source.path);
 
     // Decode on a worker thread while the window is set up.
     Image image;
