@@ -42,7 +42,7 @@ SIZE_T MeasureDib(const BYTE* data, SIZE_T size, UINT64& offset) {
     const UINT64 height = info.biHeight < 0 ? 0 - UINT64(INT64(info.biHeight)) : UINT64(info.biHeight);
     const UINT64 stride = (UINT64(info.biWidth) * info.biBitCount + 31) / 32 * 4;
     offset = info.biSize + masks + colors * 4;
-    const UINT64 total = offset + stride * height;  // < 2^63: width, height < 2^31 and stride < 2^34
+    const UINT64 total = offset + stride * height;  // < 2^64: stride <= 2^33 - 4 and height <= 2^31
     return total <= size ? SIZE_T(total) : 0;
 }
 
