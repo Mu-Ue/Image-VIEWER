@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <string>
 
 #include "config.h"
 #include "ui/draw.h"
@@ -13,7 +14,8 @@ namespace {
 
 constexpr wchar_t kClassName[] = L"ImageVIEWERBar";
 
-// A popup menu item; cmd 0 is a separator. key is the letter that picks it while its menu is open.
+// A popup menu item; cmd 0 is a separator. key is the letter that picks it while its menu is open, marked
+// as the mnemonic in the item's text, which Windows matches although the item is owner-drawn.
 struct Item {
     UINT cmd;
     const wchar_t* label;
@@ -79,9 +81,21 @@ void BuildMenus() {
         if (m.menu) DestroyMenu(m.menu);
         m.menu = CreatePopupMenu();
         for (int i = 0; i < m.count; ++i) {
+            // Owner-drawn, but given its text as well, which screen readers read out, with its key marked.
             const Item& item = m.items[i];
-            const UINT flags = MF_OWNERDRAW | (item.cmd ? (IsEnabled(item.cmd) ? 0 : MF_GRAYED) : MF_SEPARATOR);
-            AppendMenuW(m.menu, flags, item.cmd, reinterpret_cast<const wchar_t*>(&item));
+            std::wstring text = item.cmd ? std::wstring(item.label) + L'\t' + item.shortcut : L"";
+            if (item.cmd) {
+                const size_t upper = text.find(item.key);  // the capital, as in "Save &As", else as in "F&ull"
+                text.insert(upper != text.npos ? upper : text.find(wchar_t(item.key - 'A' + 'a')), 1, L'&');
+            }
+            MENUITEMINFOW mii{sizeof(mii)};
+            mii.fMask = MIIM_FTYPE | MIIM_ID | MIIM_STATE | MIIM_DATA | (item.cmd ? MIIM_STRING : 0);
+            mii.fType = MFT_OWNERDRAW | (item.cmd ? 0 : MFT_SEPARATOR);
+            mii.fState = item.cmd && !IsEnabled(item.cmd) ? MFS_GRAYED : 0;
+            mii.wID = item.cmd;
+            mii.dwItemData = ULONG_PTR(&item);
+            mii.dwTypeData = text.data();
+            InsertMenuItemW(m.menu, UINT(i), TRUE, &mii);
         }
         // No item is checkable, so drop the empty check-mark column on the left.
         MENUINFO mi{sizeof(mi), MIM_STYLE | MIM_BACKGROUND, MNS_NOCHECK};
@@ -230,19 +244,6 @@ LRESULT CALLBACK BarProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_DRAWITEM:
             DrawItem(*reinterpret_cast<const DRAWITEMSTRUCT*>(lp));
             return TRUE;
-        case WM_MENUCHAR: {  // owner-drawn items have no "&" mnemonics, so match the letter here
-            wchar_t key = LOWORD(wp);
-            if (key >= 'a' && key <= 'z') key -= 'a' - 'A';
-            for (const Menu& m : bar.menus) {
-                if (m.menu != HMENU(lp)) continue;
-                for (int i = 0; i < m.count; ++i) {
-                    if (m.items[i].cmd && m.items[i].key == key && IsEnabled(m.items[i].cmd)) {
-                        return MAKELRESULT(i, MNC_EXECUTE);
-                    }
-                }
-            }
-            return MAKELRESULT(0, MNC_IGNORE);
-        }
         case WM_COMMAND:
             return SendMessageW(bar.parent, msg, wp, lp);
     }

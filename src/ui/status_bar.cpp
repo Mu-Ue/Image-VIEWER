@@ -27,6 +27,11 @@ struct {
     bool enabled = false;
 } status;
 
+// The fields, or the message instead while one is set.
+std::span<const std::wstring> Shown() {
+    return status.message.empty() ? std::span<const std::wstring>(status.fields) : std::span(&status.message, 1);
+}
+
 void Paint(HDC dc) {
     RECT client;
     GetClientRect(status.hwnd, &client);
@@ -37,11 +42,9 @@ void Paint(HDC dc) {
     const int y = (status.height - status.textH) / 2;
 
     // Fields on the left, split by 1px lines a gap away from the text on each side, or the message instead.
-    const std::span<const std::wstring> fields =
-        status.message.empty() ? std::span<const std::wstring>(status.fields) : std::span(&status.message, 1);
     int x = status.gap;
     bool first = true;
-    for (const std::wstring& field : fields) {
+    for (const std::wstring& field : Shown()) {
         if (field.empty()) continue;
         if (!first) {
             FillSolid(dc, {x, y, x + 1, y + status.textH}, kChromePressed);
@@ -75,6 +78,18 @@ void PlaceButtons(int width) {
         const int x = left + i * status.buttonW;
         status.buttons[i] = {x, status.pad, x + status.buttonW, status.height - status.pad};
     }
+}
+
+// Repaints the bar and names its window after what it shows, which screen readers read out.
+void Update() {
+    std::wstring text;
+    for (const std::wstring& field : Shown()) {
+        if (field.empty()) continue;
+        if (!text.empty()) text += L", ";
+        text += field;
+    }
+    SetWindowTextW(status.hwnd, text.c_str());
+    InvalidateRect(status.hwnd, nullptr, FALSE);
 }
 
 int HitTest(LPARAM lp) {
@@ -134,7 +149,7 @@ LRESULT CALLBACK StatusProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_TIMER:
             KillTimer(hwnd, wp);
             status.message.clear();
-            InvalidateRect(hwnd, nullptr, FALSE);
+            Update();
             return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
@@ -154,6 +169,7 @@ HWND CreateStatusBar(HWND parent, HINSTANCE instance) {
     LayoutStatusBar(GetDpiForWindow(parent));
     status.hwnd = CreateWindowExW(0, kClassName, nullptr, WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, parent, nullptr,
                                   instance, nullptr);
+    Update();
     return status.hwnd;
 }
 
@@ -207,13 +223,13 @@ void SetStatus(std::wstring resolution, std::wstring size, long percent) {
     status.fields[0] = std::move(resolution);
     status.fields[1] = std::move(size);
     status.fields[2] = std::move(zoom);
-    InvalidateRect(status.hwnd, nullptr, FALSE);
+    Update();
 }
 
 void ShowStatusMessage(std::wstring message) {
     status.message = std::move(message);
     SetTimer(status.hwnd, 1, kMessageMs, nullptr);  // restarts the wait if a message is already shown
-    InvalidateRect(status.hwnd, nullptr, FALSE);
+    Update();
 }
 
 void EnableStepButtons(bool enable) {
