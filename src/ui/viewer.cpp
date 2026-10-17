@@ -707,12 +707,12 @@ void OnDecoded(Decode* d) {
         const HRESULT hr = d->hr;
         std::wstring name = std::move(d->name), path = std::move(d->src.path);
         Discard(d);
+        if (ask == Ask::Step) return StepFrom(std::move(path));  // skip it
+        if (g.awaitingFrames) RequestFrames();  // the request may have stopped them being read
         if (ask == Ask::Open) {
             ShowError(hr, name);
-        } else if (ask == Ask::Paste) {
-            ShowPasteError(hr);
         } else {
-            StepFrom(std::move(path));  // skip it
+            ShowPasteError(hr);
         }
         return;
     }
