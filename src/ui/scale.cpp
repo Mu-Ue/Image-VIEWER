@@ -4,6 +4,10 @@
 #include <atomic>
 #include <utility>
 
+#if defined(_M_X64) || defined(_M_IX86)
+#include <emmintrin.h>
+#endif
+
 #include "platform/pages.h"
 
 namespace {
@@ -29,33 +33,27 @@ Span Cover(UINT i, UINT src, UINT out) {
     return s;
 }
 
-// Sums one source row (BGR, starting at source x0) into each column's weighted B, G, R totals.
-// When enlarging, neighboring columns often cover the same source pixel, so their sums are copied.
-void SumRow(const BYTE* p, UINT x0, const Span* cols, UINT count, UINT out, UINT32* sums) {
-    for (UINT c = 0; c < count; ++c, sums += 3) {
-        const Span& s = cols[c];
-        if (c && s == cols[c - 1]) {
-            std::copy_n(sums - 3, 3, sums);
-            continue;
-        }
-        const BYTE* q = p + size_t(s.first - x0) * 3;
-        UINT32 b = s.firstWeight * q[0], g = s.firstWeight * q[1], r = s.firstWeight * q[2];
-        if (s.lastWeight) {
-            const BYTE* const last = p + size_t(s.last - x0) * 3;
-            UINT32 ib = 0, ig = 0, ir = 0;
-            for (q += 3; q != last; q += 3) {
-                ib += q[0];
-                ig += q[1];
-                ir += q[2];
+// Adds w times each of n bytes to sums. Every weight fits in 16 bits for bitmaps up to 65535 pixels tall,
+// where SSE2's 16-bit multiplies give the full 32-bit products, 16 bytes at a time.
+void AddRow(const BYTE* p, size_t n, UINT32 w, UINT32* sums) {
+    size_t i = 0;
+#if defined(_M_X64) || defined(_M_IX86)
+    if (w <= 0xFFFF) {
+        const __m128i weight = _mm_set1_epi16(short(w)), zero = _mm_setzero_si128();
+        for (; i + 16 <= n; i += 16) {
+            const __m128i bytes = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + i));
+            __m128i* const s = reinterpret_cast<__m128i*>(sums + i);
+            for (int half = 0; half < 2; ++half) {
+                const __m128i v = half ? _mm_unpackhi_epi8(bytes, zero) : _mm_unpacklo_epi8(bytes, zero);
+                const __m128i lo = _mm_mullo_epi16(v, weight), hi = _mm_mulhi_epu16(v, weight);
+                __m128i* const d = s + half * 2;
+                _mm_storeu_si128(d, _mm_add_epi32(_mm_loadu_si128(d), _mm_unpacklo_epi16(lo, hi)));
+                _mm_storeu_si128(d + 1, _mm_add_epi32(_mm_loadu_si128(d + 1), _mm_unpackhi_epi16(lo, hi)));
             }
-            b += ib * out + s.lastWeight * last[0];
-            g += ig * out + s.lastWeight * last[1];
-            r += ir * out + s.lastWeight * last[2];
         }
-        sums[0] = b;
-        sums[1] = g;
-        sums[2] = r;
     }
+#endif
+    for (; i < n; ++i) sums[i] += w * p[i];
 }
 
 // round(sum / area), exactly: the floating-point estimate is off by at most one.
@@ -90,21 +88,22 @@ struct Job {
     std::atomic<int> slot;  // next free slot
 };
 
-// Bytes of scratch one thread needs: running totals, two rows of column sums and, for palettized
-// images, a row expanded to BGR.
-size_t SlotBytes(UINT cols, UINT bpp, UINT x0, UINT x1) {
-    const size_t values = size_t(cols) * 3;
-    const size_t bytes = values * sizeof(UINT64) + values * 2 * sizeof(UINT32) + (bpp <= 8 ? size_t(x1 - x0) * 3 : 0);
+// Bytes of scratch one thread needs: a row of B, G, R totals of the source rows an output row covers and,
+// for palettized images, a row expanded to BGR.
+size_t SlotBytes(UINT bpp, UINT x0, UINT x1) {
+    const size_t values = size_t(x1 - x0) * 3;
+    const size_t bytes = values * sizeof(UINT32) + (bpp <= 8 ? values : 0);
     return (bytes + 63) & ~size_t(63);
 }
 
-// Computes chunks of the current band until none are left.
+// Computes chunks of the current band until none are left. Each output row first adds up the source rows it
+// covers, weighted, into one row of totals (which vectorizes), then sums that row across each column, so
+// the horizontal work is done once per output row rather than once per source row.
 void RunChunks(Job& job) {
-    const size_t values = size_t(job.cols) * 3;
+    const size_t values = size_t(job.x1 - job.x0) * 3;
     BYTE* const mine = job.scratch + size_t(job.slot++) * job.slotBytes;
-    UINT64* const acc = reinterpret_cast<UINT64*>(mine);
-    UINT32* const sums = reinterpret_cast<UINT32*>(acc + values);
-    BYTE* const expanded = reinterpret_cast<BYTE*>(sums + values * 2);
+    UINT32* const sums = reinterpret_cast<UINT32*>(mine);
+    BYTE* const expanded = reinterpret_cast<BYTE*>(sums + values);
 
     // Source row sy's visible pixels as BGR: palettized rows are expanded first.
     const auto row = [&](UINT sy) -> const BYTE* {
@@ -122,10 +121,6 @@ void RunChunks(Job& job) {
         return expanded;
     };
 
-    // The last source row of an output row is often the first of the next, so the latest sums are kept.
-    UINT32* cached = sums;
-    UINT32* scratch = cached + values;
-    UINT cachedY = UINT(-1);
     for (int i; (i = job.next++) * kChunk < job.n;) {
         Span previous{};
         for (int r = i * kChunk, end = std::min(job.n, r + kChunk); r < end; ++r) {
@@ -137,24 +132,36 @@ void RunChunks(Job& job) {
                 continue;
             }
             previous = s;
-            std::fill_n(acc, values, UINT64(0));
+            // Totals stay below 2^32: the weights of an output row's source rows add up to the source height.
+            std::fill_n(sums, values, 0u);
             for (UINT sy = s.first; sy <= s.last; ++sy) {
-                const UINT64 w = sy == s.first ? s.firstWeight : sy == s.last ? s.lastWeight : job.height;
-                if (sy != cachedY) {
-                    SumRow(row(sy), job.x0, job.spans, job.cols, job.width, scratch);
-                    std::swap(cached, scratch);
-                    cachedY = sy;
-                }
-                for (size_t k = 0; k < values; ++k) acc[k] += w * cached[k];
+                const UINT32 w = sy == s.first ? s.firstWeight : sy == s.last ? s.lastWeight : job.height;
+                AddRow(row(sy), values, w, sums);
             }
+            // When enlarging, neighboring columns often cover the same source pixels and come out the same.
             for (UINT c = 0; c < job.cols; ++c) {
-                if (c && job.spans[c] == job.spans[c - 1]) {
+                const Span& x = job.spans[c];
+                if (c && x == job.spans[c - 1]) {
                     out[c] = out[c - 1];
                     continue;
                 }
-                const UINT64* a = acc + size_t(c) * 3;
-                out[c] = Average(a[0], job.area, job.inverse) | Average(a[1], job.area, job.inverse) << 8 |
-                         Average(a[2], job.area, job.inverse) << 16;
+                const UINT32* q = sums + size_t(x.first - job.x0) * 3;
+                UINT64 b = UINT64(x.firstWeight) * q[0], g = UINT64(x.firstWeight) * q[1];
+                UINT64 red = UINT64(x.firstWeight) * q[2];
+                if (x.lastWeight) {
+                    const UINT32* const last = sums + size_t(x.last - job.x0) * 3;
+                    UINT64 ib = 0, ig = 0, ir = 0;
+                    for (q += 3; q != last; q += 3) {
+                        ib += q[0];
+                        ig += q[1];
+                        ir += q[2];
+                    }
+                    b += ib * job.width + UINT64(x.lastWeight) * last[0];
+                    g += ig * job.width + UINT64(x.lastWeight) * last[1];
+                    red += ir * job.width + UINT64(x.lastWeight) * last[2];
+                }
+                out[c] = Average(b, job.area, job.inverse) | Average(g, job.area, job.inverse) << 8 |
+                         Average(red, job.area, job.inverse) << 16;
             }
         }
     }
@@ -205,7 +212,7 @@ bool DrawScaled(HDC dc, HDC imageDC, int x, int y, int width, int height, const 
     // Each band is split across the thread pool, with this thread helping.
     const int helpers = std::min(int(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)) - 1, (kBand - 1) / kChunk);
     const UINT x0 = Cover(UINT(c0), srcW, UINT(width)).first, x1 = Cover(UINT(c1 - 1), srcW, UINT(width)).last + 1;
-    const size_t slotBytes = SlotBytes(cols, bpp, x0, x1);
+    const size_t slotBytes = SlotBytes(bpp, x0, x1);
     const Pages<Span> spans = AllocPages<Span>(cols);
     const Pages<UINT32> band = AllocPages<UINT32>(size_t(cols) * kBand);
     const Pages<BYTE> scratch = AllocPages<BYTE>(slotBytes * (helpers + 1));
