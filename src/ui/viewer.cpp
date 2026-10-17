@@ -540,9 +540,10 @@ void StepFrom(std::wstring from) {
     std::wstring around[2];
     Neighbors(from, around);
     std::wstring& to = around[g.stepDir > 0];
-    // Back at the image shown, nothing else, or every other file failed.
+    // Back at the image shown, nothing else, or every other file failed. Cancel only a step still being decoded:
+    // cancelling would also restart reading the frames of the animated GIF shown.
     if (to.empty() || SamePath(to, g.source.path) || SamePath(to, g.stepFirst)) {
-        CancelDecode();
+        if (!g.stepTarget.empty()) CancelDecode();
         return;
     }
     if (g.stepFirst.empty()) g.stepFirst = to;
